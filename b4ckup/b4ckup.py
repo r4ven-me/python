@@ -785,7 +785,12 @@ def main_db():
 
         # Add any extra parameters provided by the user
         if extra_params:
-            command.extend(extra_params.split())
+            # Split parameters and find the position to insert
+            params_to_add = extra_params.split()
+            position = command.index("--create") + 1
+            for param in params_to_add:
+                command.insert(position, param)
+                position += 1  # Shift position after each inserted parameter
 
         # Set any custom environment variable for backup
         env = os.environ.copy()
