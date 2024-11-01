@@ -2,12 +2,12 @@
 
 """Backup script for files (tar, rsync) and databases (pg_dump, mysqldump)"""
 # -*- coding: utf-8 -*-
-__version__ = "1.0.0"
+__version__ = "0.9.5"
 __status__ = "test"
 __author__ = "Ivan Cherniy"
 __email__ = "kar-kar@r4ven.me"
 __copyright__ = "Copyright 2024, r4ven.me"
-__license__ = "GPL2"
+__license__ = "GPL3"
 
 ###############
 ### GENERAL ###
@@ -24,16 +24,15 @@ import shutil
 import psutil
 import logging
 import re
-import yaml
 import getpass
 import configargparse
-from sshtunnel import SSHTunnelForwarder
 
 # Define global constants and paths
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 LOCK_FILE = os.path.splitext(os.path.realpath(__file__))[0] + ".lock"
 TIMESTAMP = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 zbx_value = "0"
+
 
 def check_utility(utility_name):
     """Check if a required utility is installed"""
@@ -158,26 +157,29 @@ def create_lock_file():
     if os.path.exists(LOCK_FILE):
         while True:
             # Open the lock file and read the stored PID
-            with open(LOCK_FILE, "r") as f:
-                try:
-                    # Try to parse the PID from the file
-                    pid = int(f.read().strip())
-                    if psutil.pid_exists(pid):
-                        # If the process with the PID is still running, wait for it to finish
-                        logging.warning(
-                            f"Backup process is already running (PID: {pid}). Waiting for it to complete..."
-                        )
-                        time.sleep(5) # Wait for 5 seconds before checking again
-                    else:
-                        # If the process is no longer active, continue with the current backup
-                        logging.info(
-                            f"Inactive process found in lock file (PID: {pid}). Continuing..."
-                        )
+            if os.path.exists(LOCK_FILE):
+                with open(LOCK_FILE, "r") as f:
+                    try:
+                        # Try to parse the PID from the file
+                        pid = int(f.read().strip())
+                        if psutil.pid_exists(pid):
+                            # If the process with the PID is still running, wait for it to finish
+                            logging.warning(
+                                f"Backup process is already running (PID: {pid}). Waiting for it to complete..."
+                            )
+                            time.sleep(5) # Wait for 5 seconds before checking again
+                        else:
+                            # If the process is no longer active, continue with the current backup
+                            logging.info(
+                                f"Inactive process found in lock file (PID: {pid}). Continuing..."
+                            )
+                            break
+                    except ValueError:
+                        # If the PID in the lock file is invalid, log a warning and continue
+                        logging.warning("Invalid PID in lock file. Continuing...")
                         break
-                except ValueError:
-                    # If the PID in the lock file is invalid, log a warning and continue
-                    logging.warning("Invalid PID in lock file. Continuing...")
-                    break
+            else:
+                break
 
     # Create or overwrite the lock file with the current process's PID
     with open(LOCK_FILE, "w") as f:
@@ -247,11 +249,16 @@ def compress_backup(
             # Check if 'gpg' utility is available for encryption
             check_utility("gpg")
             logging.info("The backup file will be encrypted")
+            # Update file extension to reflect encryption
+            backup_file += ".gpg"
             # Create a temporary directory for GPG encryption
             gpg_tmp_dir = os.path.join(SCRIPT_DIR, ".gnupg")
             os.mkdir(gpg_tmp_dir, mode=0o700)
-            # Update file extension to reflect encryption
-            backup_file += ".gpg"
+            # Path for the gpg password file
+            gpg_pass_file = gpg_tmp_dir + "/passfile"
+            # Write the password to a temporary file
+            with open(gpg_pass_file, "w") as pass_file:
+                pass_file.write(encrypt_password)
             # Prepare GPG encryption command
             encrypt_command = [
                 "gpg",
@@ -260,9 +267,11 @@ def compress_backup(
                 gpg_tmp_dir,
                 "--batch",
                 "--yes",
-                "--passphrase",
-                encrypt_password,
+                # "--passphrase",
+                # encrypt_password,
                 "--symmetric",
+                "--passphrase-file",
+                gpg_pass_file,
             ]
             try:
                 # Open the backup file for writing the encrypted data
@@ -336,12 +345,18 @@ def encrypt_backup(command, env, backup_file, encrypt_password):
 
     logging.info("The backup file will be encrypted")
 
+    # Update backup file name to reflect GPG encryption
+    backup_file += ".gpg"
+
     # Create a temporary directory for GPG encryption configuration
     gpg_tmp_dir = os.path.join(SCRIPT_DIR, ".gnupg")
     os.mkdir(gpg_tmp_dir, mode=0o700)
 
-    # Update backup file name to reflect GPG encryption
-    backup_file += ".gpg"
+    # Path for the gpg password file
+    gpg_pass_file = gpg_tmp_dir + "/passfile"
+    # Write the password to a temporary file
+    with open(gpg_pass_file, "w") as pass_file:
+        pass_file.write(encrypt_password)
 
     # Prepare GPG encryption command
     encrypt_command = [
@@ -351,9 +366,11 @@ def encrypt_backup(command, env, backup_file, encrypt_password):
         gpg_tmp_dir,
         "--batch",
         "--yes",
-        "--passphrase",
-        encrypt_password,
+        # "--passphrase",
+        # encrypt_password,
         "--symmetric",
+        "--passphrase-file",
+        gpg_pass_file,
     ]
 
     try:
@@ -472,12 +489,20 @@ def main_file():
             command.extend(source_file.split())
 
         # Add extra parameters for the backup command if provided
-        if extra_params:
-            command.extend(extra_params.split())
+        # if extra_params:
+        #     command.extend(extra_params.split())
 
         # Adjust command if compression, SSH, or encryption is required
         if compress or ssh_host or encrypt_password:
             command[2] = "--file=-"
+
+        if extra_params:
+            # Split parameters and find the position to insert
+            params_to_add = extra_params.split()
+            position = command.index("--create") + 1
+            for param in params_to_add:
+                command.insert(position, param)
+                position += 1  # Shift position after each inserted parameter
 
         # If using SSH, prepare the SSH command
         if ssh_host:
@@ -496,7 +521,7 @@ def main_file():
 
         # Set any custom environment variable for the backup process
         env = os.environ.copy()
-        env["BACKUP_ENV"] = "True"
+        env["B4CKUP_ENV"] = "True"
 
         logging.info("Starting file backup with tar...")
 
@@ -593,7 +618,7 @@ def main_file():
 
         # Set any custom environment variable for the backup process
         env = os.environ.copy()
-        env["BACKUP_ENV"] = "True"
+        env["B4CKUP_ENV"] = "True"
 
         logging.info("Starting file backup with rsync...")
 
@@ -671,8 +696,8 @@ def main_file():
 def main_db():
     """Main function of the database backup"""
 
-    ## PostgreSQL
-    def backup_postgresql(
+    ## Database
+    def backup_database(
         db_host,
         db_port,
         db_name,
@@ -686,12 +711,18 @@ def main_db():
         encrypt_password,
         filename,
     ):
-        """Backup PostgreSQL database"""
+        """Backup selected database"""
 
-        logging.info("Starting PostgreSQL database backup...")
+        # Define database type
+        if args.db_tool == "pg_dump":
+            db_type = "PotstgreSQL"
+        elif args.db_tool == "mysqldump":
+            db_type = "MySQL"
 
-        # Check if the 'pg_dump' utility is available
-        check_utility("pg_dump")
+        logging.info(f"Starting {db_type} database backup...")
+
+        # Check if the dump utility is available
+        check_utility(args.db_tool)
 
         # Set the backup file name based on provided filename or default naming
         if not filename:
@@ -699,28 +730,53 @@ def main_db():
         else:
             backup_file = os.path.join(output_dir, f"{filename}.sql")
 
-        # Prepare the command to dump the PostgreSQL database
-        command = [
-            "pg_dump",
-            f"--host={db_host}",
-            f"--port={db_port}",
-            f"--dbname={db_name}",
-            f"--username={db_user}",
-            f"--file={backup_file}",
-        ]
+        # Prepare the command to dump a database
+        if args.db_tool == "pg_dump":
+            command = [
+                "pg_dump",
+                f"--host={db_host}",
+                f"--port={db_port}",
+                f"--dbname={db_name}",
+                f"--username={db_user}",
+                f"--file={backup_file}",
+            ]
+            # (REQUIRED) Set the PostgreSQL password environment variable
+            env = os.environ.copy()
+            env["PGPASSWORD"] = db_password
+        elif args.db_tool == "mysqldump":
+            # Path for the temporary MySQL config file
+            mysql_config_path = SCRIPT_DIR + "/.mysql_temp.cnf"
+            # Write the password to a temporary MySQL config file
+            with open(mysql_config_path, "w") as mysql_config:
+                mysql_config.write(f"[client]\npassword={db_password}\n")
+            # Set file permissions to read-only for the owner
+            os.chmod(mysql_config_path, 0o400)
+            command = [
+                "mysqldump",
+                f"--defaults-extra-file={mysql_config_path}",
+                f"--host={db_host}",
+                f"--port={db_port}",
+                f"--user={db_user}",
+                # f"--password={db_password}",
+                db_name,
+                f"--result-file={backup_file}",
+            ]
+            # Set any custom environment variable for backup
+            env = os.environ.copy()
+            env["B4CKUP_ENV"] = "True"
 
         # Add any extra parameters provided by the user
         if extra_params:
             command.extend(extra_params.split())
 
-        # (REQUIRED) Set the PostgreSQL password environment variable
-        env = os.environ.copy()
-        env["PGPASSWORD"] = db_password
-
         try:
             # Handle compression or encryption as needed
             if compress:
-                del command[5] # Remove the file argument
+                # Remove the result file argument
+                if args.db_tool == "pg_dump":
+                    del command[5]
+                elif args.db_tool == "mysqldump":
+                    del command[6]
                 backup_file = compress_backup(
                     command,
                     env,
@@ -731,7 +787,11 @@ def main_db():
                 )
             else:
                 if encrypt_password:
-                    del command[5] # Remove the file argument for encryption
+                    # Remove the file argument for encryption
+                    if args.db_tool == "pg_dump":
+                        del command[5]
+                    elif args.db_tool == "mysqldump":
+                        del command[6]
                     backup_file = encrypt_backup(
                         command, env, backup_file, encrypt_password
                     )
@@ -739,109 +799,39 @@ def main_db():
                     # Execute the command to perform the backup
                     subprocess.run(command, env=env, check=True)
                     check_backup_size(backup_file) # Check backup file size
-            logging.info(f"PostgreSQL backup successfully created: {backup_file}")
+            logging.info(f"{db_type} backup successfully created: {backup_file}")
         except subprocess.CalledProcessError as e:
-            logging.error(f"Error during PostgreSQL backup: {str(e)}")
+            logging.error(f"Error during {db_type} backup: {str(e)}")
             exit(1)
-
-    ## MySQL
-    def backup_mysql(
-        db_host,
-        db_port,
-        db_name,
-        db_user,
-        db_password,
-        output_dir,
-        extra_params,
-        compress,
-        compress_format,
-        compress_level,
-        encrypt_password,
-        filename,
-    ):
-        """Backup MySQL database"""
-
-        logging.info("Starting MySQL database backup...")
-
-        # Check if the 'mysqldump' utility is available
-        check_utility("mysqldump")
-
-        # Set the backup file name based on provided filename or default naming
-        if not filename:
-            backup_file = os.path.join(output_dir, f"{db_name}_backup_{TIMESTAMP}.sql")
-        else:
-            backup_file = os.path.join(output_dir, f"{filename}.sql")
-
-        # Prepare the command to dump the MySQL database
-        command = [
-            "mysqldump",
-            f"--host={db_host}",
-            f"--port={db_port}",
-            f"--user={db_user}",
-            f"--password={db_password}",
-            db_name,
-            f"--result-file={backup_file}",
-        ]
-
-        # Add any extra parameters provided by the user
-        if extra_params:
-            # Split parameters and find the position to insert
-            params_to_add = extra_params.split()
-            position = command.index("--create") + 1
-            for param in params_to_add:
-                command.insert(position, param)
-                position += 1  # Shift position after each inserted parameter
-
-        # Set any custom environment variable for backup
-        env = os.environ.copy()
-        env["BACKUP_ENV"] = "True"
-
-        try:
-            # Handle compression or encryption as needed
-            if compress:
-                del command[6] # Remove the result file argument
-                backup_file = compress_backup(
-                    command,
-                    env,
-                    backup_file,
-                    compress_format,
-                    compress_level,
-                    encrypt_password,
-                )
-            else:
-                if encrypt_password:
-                    del command[6] # Remove the result file argument for encryption
-                    backup_file = encrypt_backup(
-                        command, env, backup_file, encrypt_password
-                    )
-                else:
-                    # Execute the command to perform the backup
-                    subprocess.run(command, env=env, check=True)
-                    check_backup_size(backup_file) # Check backup file size
-            logging.info(f"MySQL backup successfully created: {backup_file}")
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Error during MySQL backup: {str(e)}")
-            exit(1)
+        finally:
+            if args.db_tool == "mysqldump":
+                os.remove(mysql_config_path)
 
     # SSH tunneling
-    def open_ssh_key_tunnel(
+    def open_ssh_tunnel(
         ssh_host, ssh_port, ssh_user, ssh_key, db_host, db_port, local_forward_port
     ):
         """Open SSH tunnel using a private key"""
 
+        check_utility("ssh")
+
         logging.info("Connecting to database via SSH tunnel...")
 
-        # Create an SSH tunnel for database connection
-        tunnel = SSHTunnelForwarder(
-            (ssh_host, int(ssh_port)),
-            ssh_username=ssh_user,
-            ssh_pkey=ssh_key,
-            remote_bind_address=(db_host, db_port),
-            local_bind_address=("127.0.0.1", local_forward_port),
-        )
+        ssh_command = [
+            "ssh",
+            "-f",
+            "-o", "ExitOnForwardFailure=yes",
+            "-L", f"{local_forward_port}:{db_host}:{db_port}",
+            ssh_host,
+            "-p", ssh_port,
+            "-l", ssh_user,
+            "-i", ssh_key,
+            "sleep 10"
+        ]
 
         try:
-            tunnel.start() # Start the tunnel
+            tunnel = subprocess.Popen(ssh_command)
+            time.sleep(5)
             logging.info(
                 f"SSH tunnel opened: local port {local_forward_port} -> {ssh_host}:{db_port}"
             )
@@ -849,16 +839,7 @@ def main_db():
             logging.error(f"Error opening SSH tunnel: {e}")
             exit(1)
 
-        return tunnel
-
-    def close_ssh_tunnel(tunnel):
-        """Close SSH-tunnel"""
-
-        try:
-            tunnel.stop() # Stop the tunnel
-            logging.info("SSH tunnel has been closed")
-        except Exception as e:
-            logging.error(f"Error closing SSH tunnel: {e}")
+        return ssh_command
 
     ## Start backup
     if args.remove_old:
@@ -901,12 +882,12 @@ def main_db():
     else:
         local_forward_port = db_port
 
-    ssh_tunnel = None # Initialize SSH tunnel variable
+    # ssh_tunnel = None # Initialize SSH tunnel variable
 
     try:
         if args.ssh_host:
             # Open SSH tunnel if SSH host is provided
-            ssh_tunnel = open_ssh_key_tunnel(
+            ssh_tunnel = open_ssh_tunnel(
                 ssh_host=args.ssh_host,
                 ssh_port=args.ssh_port,
                 ssh_user=args.ssh_user,
@@ -920,43 +901,25 @@ def main_db():
         else:
             db_host = args.db_host # Use provided database host directly
         # Perform the database backup based on user choice
-        if args.db_tool == "pg_dump":
-            backup_postgresql(
-                db_host,
-                db_port,
-                args.db_name,
-                args.db_user,
-                db_password,
-                args.output_dir,
-                args.extra_params,
-                args.compress,
-                args.compress_format,
-                args.compress_level,
-                encrypt_password,
-                args.filename,
-            )
-        elif args.db_tool == "mysqldump":
-            backup_mysql(
-                db_host,
-                db_port,
-                args.db_name,
-                args.db_user,
-                db_password,
-                args.output_dir,
-                args.extra_params,
-                args.compress,
-                args.compress_format,
-                args.compress_level,
-                encrypt_password,
-                args.filename,
-            )
+        backup_database(
+            db_host,
+            db_port,
+            args.db_name,
+            args.db_user,
+            db_password,
+            args.output_dir,
+            args.extra_params,
+            args.compress,
+            args.compress_format,
+            args.compress_level,
+            encrypt_password,
+            args.filename,
+        )
         # If Zabbix config and key are provided, set the value to success
         if args.zbx_config and args.zbx_key:
             global zbx_value
             zbx_value = "1"
     finally:
-        if ssh_tunnel:
-            close_ssh_tunnel(ssh_tunnel) # Close the SSH tunnel if it was opened
         remove_lock_file() # Ensure the lock file is removed after operation
 
 
@@ -972,23 +935,23 @@ parser = configargparse.ArgumentParser(
 subparsers = parser.add_subparsers(
     dest="mode",
     required=True,
-    help="Select mode: 'file' for file backup or 'db' for database backup",
+    help="select mode: 'file' for file backup or 'db' for database backup",
 )
 
 # Parser for file backup mode
 file_parser = subparsers.add_parser("file")
 file_subparsers = file_parser.add_subparsers(
-    dest="file_tool", required=True, help="File backup tool"
+    dest="file_tool", required=True, help="file backup tool"
 )
 # Subparser for tar tool
-tar_parser = file_subparsers.add_parser("tar", help="For file archiving")
+tar_parser = file_subparsers.add_parser("tar", help="for file archiving")
 # Subparser for rsync tool
-rsync_parser = file_subparsers.add_parser("rsync", help="For file syncing")
+rsync_parser = file_subparsers.add_parser("rsync", help="for file syncing")
 
 # Parser for database backup mode
 db_parser = subparsers.add_parser("db")
 db_subparsers = db_parser.add_subparsers(
-    dest="db_tool", required=True, help="Database backup tool"
+    dest="db_tool", required=True, help="database backup tool"
 )
 # Subparser for PostgreSQL
 postgresql_parser = db_subparsers.add_parser("pg_dump", help="for PostgreSQL")
@@ -1001,9 +964,9 @@ for tool_parser in [tar_parser, rsync_parser, postgresql_parser, mysql_parser]:
         "--config",
         metavar="FILE",
         is_config_file=True,
-        help="Path to YAML config file (command line arguments override config file values)",
+        help="path to YAML config file (command line arguments override config file values)",
     )
-    tool_parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+    tool_parser.add_argument("--silent", action="store_true", help="Enable quiet mode")
 
 # Add database specific arguments for PostgreSQL and MySQL
 for tool_parser in [postgresql_parser, mysql_parser]:
@@ -1189,8 +1152,8 @@ if args.mode == "file":
     if args.file_tool == "tar":
         if (args.keep_weekly or args.keep_monthly) and not args.remove_old:
             parser.error("Required parameter to delete old backups: --remove-old")
-    if (args.compress_format or args.compress_level) and not args.compress:
-        parser.error("Required parameter to use compression: --compress")
+        if (args.compress_format or args.compress_level) and not args.compress:
+            parser.error("Required parameter to use compression: --compress")
     if (args.ssh_host or args.ssh_port or args.ssh_user or args.ssh_key) and not (
         args.ssh_host and args.ssh_port and args.ssh_user and args.ssh_key
     ):
@@ -1203,8 +1166,8 @@ if (args.zbx_config and not args.zbx_key) or (args.zbx_key and not args.zbx_conf
     parser.error("Required parameters to send data to Zabbix: --zbx-config, --zbx-key")
 
 
-# Configure logging based on debug mode
-if not args.debug:
+# Configure logging
+if not args.silent:
     logging.basicConfig(
         level=logging.INFO,
         format="[%(asctime)s] - [%(levelname)s] - %(message)s",
@@ -1213,11 +1176,8 @@ if not args.debug:
     logging.info("*** STARTING BACKUP PYTHON SCRIPT ***")
 else:
     logging.basicConfig(
-        level=logging.DEBUG,
-        format="[%(asctime)s] - [%(levelname)s] - %(name)s - %(message)s",
-        handlers=[logging.StreamHandler()],
+        level=logging.CRITICAL + 1
     )
-    logging.debug("*** STARTING BACKUP PYTHON SCRIPT IN DEBUG MODE ***")
 
 
 ###################

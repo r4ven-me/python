@@ -5,7 +5,6 @@
 ### Tar arguments ###
 #####################
 
-# debug: true
 # source-dir: /path/to/source/dir
 # source-file: "file1 file2 file3 dir1 dir2"
 # output-dir: /path/to/output/dir
@@ -31,7 +30,6 @@
 ### Rsync arguments ###
 #######################
 
-# # debug: true
 # source-dir: /path/to/source/dir
 # source-file: "file1 file2 file3 dir1 dir2"
 # output-dir: /path/to/output/dir
@@ -48,7 +46,6 @@
 ### Database arguments ###
 ##########################
 
-# debug: true
 # db-host: 127.0.0.1
 # db-port: 5432
 # db-name: postgres
