@@ -509,13 +509,13 @@ def main_file():
             check_utility("ssh")
             ssh_prefix = [
                 "ssh",
+                "-q",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
                 ssh_host,
-                "-p",
-                ssh_port,
-                "-l",
-                ssh_user,
-                "-i",
-                ssh_key,
+                "-p", ssh_port,
+                "-l", ssh_user,
+                "-i", ssh_key,
             ]
             command = ssh_prefix + command # Prepend SSH command to tar command
 
@@ -613,7 +613,7 @@ def main_file():
             if not source_file:
                 command[7] = f":{source_dir}" # Adjust for SSH source if no specific files
             command.extend(
-                ["-e", f"ssh {ssh_host} -p {ssh_port} -l {ssh_user} -i {ssh_key}"]
+                ["-e", f"ssh -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {ssh_host} -p {ssh_port} -l {ssh_user} -i {ssh_key}"]
             )
 
         # Set any custom environment variable for the backup process
@@ -819,14 +819,17 @@ def main_db():
 
         ssh_command = [
             "ssh",
+            "-q",
             "-f",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
             "-o", "ExitOnForwardFailure=yes",
             "-L", f"{local_forward_port}:{db_host}:{db_port}",
             ssh_host,
             "-p", ssh_port,
             "-l", ssh_user,
             "-i", ssh_key,
-            "sleep 10"
+            "sleep 10",
         ]
 
         try:
