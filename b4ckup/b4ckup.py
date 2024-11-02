@@ -460,6 +460,9 @@ def main_file():
         ssh_port,
         ssh_user,
         ssh_key,
+        label_keep,
+        label_weekly,
+        label_monthly,
     ):
         """Backup files with tar"""
 
@@ -470,7 +473,14 @@ def main_file():
         if not filename:
             dir_path = os.path.abspath(source_dir)
             dir_name = os.path.basename(dir_path)
-            backup_file = os.path.join(output_dir, f"{dir_name}_backup_{TIMESTAMP}.tar")
+            if label_keep:
+                backup_file = os.path.join(output_dir, f"{dir_name}_backup_keep_{TIMESTAMP}.tar")
+            elif label_weekly:
+                backup_file = os.path.join(output_dir, f"{dir_name}_backup_weekly_{TIMESTAMP}.tar")
+            elif label_monthly:
+                backup_file = os.path.join(output_dir, f"{dir_name}_backup_monthly_{TIMESTAMP}.tar")
+            else:
+                backup_file = os.path.join(output_dir, f"{dir_name}_backup_{TIMESTAMP}.tar")
         else:
             backup_file = os.path.join(output_dir, f"{filename}.tar")
 
@@ -669,6 +679,9 @@ def main_file():
                 args.ssh_port,
                 args.ssh_user,
                 args.ssh_key,
+                args.label_keep,
+                args.label_weekly,
+                args.label_monthly,
             )
         elif args.file_tool == "rsync":
             backup_rsync(
@@ -710,6 +723,9 @@ def main_db():
         compress_level,
         encrypt_password,
         filename,
+        label_keep,
+        label_weekly,
+        label_monthly,
     ):
         """Backup selected database"""
 
@@ -726,7 +742,14 @@ def main_db():
 
         # Set the backup file name based on provided filename or default naming
         if not filename:
-            backup_file = os.path.join(output_dir, f"{db_name}_backup_{TIMESTAMP}.sql")
+            if label_keep:
+                backup_file = os.path.join(output_dir, f"{db_name}_backup_keep_{TIMESTAMP}.sql")
+            elif label_weekly:
+                backup_file = os.path.join(output_dir, f"{db_name}_backup_weekly_{TIMESTAMP}.sql")
+            elif label_monthly:
+                backup_file = os.path.join(output_dir, f"{db_name}_backup_monthly_{TIMESTAMP}.sql")
+            else:
+                backup_file = os.path.join(output_dir, f"{db_name}_backup_{TIMESTAMP}.sql")
         else:
             backup_file = os.path.join(output_dir, f"{filename}.sql")
 
@@ -792,7 +815,7 @@ def main_db():
                         del command[5]
                     elif args.db_tool == "mysqldump":
                         del command[6]
-                    backup_file = encrypt_backup(
+                    result_file = encrypt_backup(
                         command, env, backup_file, encrypt_password
                     )
                 else:
@@ -917,6 +940,9 @@ def main_db():
             args.compress_level,
             encrypt_password,
             args.filename,
+            args.label_keep,
+            args.label_weekly,
+            args.label_monthly,
         )
         # If Zabbix config and key are provided, set the value to success
         if args.zbx_config and args.zbx_key:
@@ -1051,6 +1077,11 @@ for tool_parser in [tar_parser, postgresql_parser, mysql_parser]:
         metavar="AMOUNT",
         help="save (default 1) backups with 'monthly' in name",
     )
+    # Mutually exclusive group for label options
+    label_group = tool_parser.add_mutually_exclusive_group()
+    label_group.add_argument("--label-keep", action="store_true", help="add keep label in name")
+    label_group.add_argument("--label-weekly", action="store_true", help="add weekly label in name")
+    label_group.add_argument("--label-monthly", action="store_true", help="add monthly label in name")
     tool_parser.add_argument("--compress", action="store_true", help="compress backup")
     tool_parser.add_argument(
         "--compress-format",
