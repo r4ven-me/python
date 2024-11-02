@@ -96,11 +96,13 @@ def remove_old_backup(output_dir, remove_old, keep_weekly, keep_monthly):
     # Loop through files in the output directory
     for file_name in os.listdir(output_dir):
         file_path = os.path.join(output_dir, file_name)
+
         # Check if the file has a valid backup extension
         if os.path.isfile(file_path) and file_name.endswith(valid_extensions):
             # Skip files marked with 'keep'
             if "keep" in file_name:
                 continue
+            
             # Collect weekly and monthly backups
             if keep_weekly and "weekly" in file_name:
                 weekly_files.append((file_name, os.path.getmtime(file_path)))
@@ -109,8 +111,10 @@ def remove_old_backup(output_dir, remove_old, keep_weekly, keep_monthly):
             else:
                 # Delete files older than the specified retention period
                 file_last_modified = os.path.getmtime(file_path)
+                
                 if (now - file_last_modified) > (remove_old * 86400): # one day
                     logging.info(f"Deleting file: {file_path}")
+                    
                     try:
                         os.remove(file_path)
                     except OSError as e:
@@ -130,6 +134,7 @@ def remove_old_backup(output_dir, remove_old, keep_weekly, keep_monthly):
             for file_info in files_list[copies_to_keep:]:
                 file_path = os.path.join(output_dir, file_info[0])
                 logging.info(f"Deleting old {file_type} file: {file_path}")
+                
                 try:
                     # Attempt to remove the file
                     os.remove(file_path)
@@ -162,6 +167,7 @@ def create_lock_file():
                     try:
                         # Try to parse the PID from the file
                         pid = int(f.read().strip())
+                        
                         if psutil.pid_exists(pid):
                             # If the process with the PID is still running, wait for it to finish
                             logging.warning(
@@ -199,12 +205,17 @@ def remove_lock_file():
             logging.error(f"Error while removing lock file: {e}")
 
 
-def check_exit_code(code):
+def check_exit_code(code, process):
     """Check return code of process result"""
     
     # If the exit code is not 0 (indicating success), raise an error
     if code != 0:
-        raise ValueError("Exit code is not 0")
+        if args.mode == file:
+            if args.file_tool == tar and process == "dump process":
+                pass
+        else:
+            raise ValueError(f"Return code of {process} is not 0")
+            # logging.warning(f"Return code of {process} is not 0")
 
 
 def check_backup_size(file):
@@ -249,16 +260,21 @@ def compress_backup(
             # Check if 'gpg' utility is available for encryption
             check_utility("gpg")
             logging.info("The backup file will be encrypted")
+            
             # Update file extension to reflect encryption
             backup_file += ".gpg"
+            
             # Create a temporary directory for GPG encryption
             gpg_tmp_dir = os.path.join(SCRIPT_DIR, ".gnupg")
             os.mkdir(gpg_tmp_dir, mode=0o700)
+            
             # Path for the gpg password file
             gpg_pass_file = gpg_tmp_dir + "/passfile"
+            
             # Write the password to a temporary file
             with open(gpg_pass_file, "w") as pass_file:
                 pass_file.write(encrypt_password)
+            
             # Prepare GPG encryption command
             encrypt_command = [
                 "gpg",
@@ -267,40 +283,67 @@ def compress_backup(
                 gpg_tmp_dir,
                 "--batch",
                 "--yes",
-                # "--passphrase",
-                # encrypt_password,
                 "--symmetric",
                 "--passphrase-file",
                 gpg_pass_file,
+                # "--passphrase",
+                # encrypt_password,
             ]
+            
             try:
-                # Open the backup file for writing the encrypted data
                 with open(backup_file, "wb") as f_out:
                     dump_process = subprocess.Popen(
-                        command, env=env, stdout=subprocess.PIPE
+                        command,
+                        env=env,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE
                     )
+                    
                     # Compress the backup data using the specified format and level
                     zip_process = subprocess.Popen(
                         [f"{compress_format}", f"-{compress_level}"],
                         stdin=dump_process.stdout,
                         stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE
                     )
+                    
                     # Encrypt the compressed data using GPG
                     encrypt_process = subprocess.Popen(
-                        encrypt_command, stdin=zip_process.stdout, stdout=f_out
+                        encrypt_command,
+                        stdin=zip_process.stdout,
+                        stdout=f_out,
+                        stderr=subprocess.PIPE
                     )
-                    # Close pipes to allow processes to finish
+                    
+                    # Close the stdout of the dump process to allow it to finish
                     dump_process.stdout.close()
+                    
+                    # Wait for the processes to complete and capture their outputs
+                    dump_output, dump_errors = dump_process.communicate()
+                    if dump_errors:
+                        logging.warning(f"DUMP STDERR:\n\n{dump_errors}")
+                    
+                    check_exit_code(dump_process.returncode, "dump process")
+                    
+                    # Close the stdout of the zip process to allow it to finish
                     zip_process.stdout.close()
-                    # Wait for processes to complete and check exit codes
-                    dump_exit_code = dump_process.wait()
-                    check_exit_code(dump_exit_code)
-                    zip_exit_code = zip_process.wait()
-                    check_exit_code(zip_exit_code)
-                    encrypt_exit_code = encrypt_process.wait()
-                    check_exit_code(encrypt_exit_code)
-                    # Check if the resulting backup file is valid (non-empty)
-                    check_backup_size(backup_file)
+                    
+                    # Wait for the zip process
+                    zip_output, zip_errors = zip_process.communicate()
+                    if zip_errors:
+                        logging.warning(f"ZIP STDERR:\n\n{zip_errors}")
+                    
+                    check_exit_code(zip_process.returncode, "zip process")
+                    
+                    # Wait for the encrypt process
+                    encrypt_output, encrypt_errors = encrypt_process.communicate()
+                    if encrypt_errors:
+                        logging.warning(f"ENCRYPT STDERR:\n\n{encrypt_errors}")
+                    
+                    check_exit_code(encrypt_process.returncode, "encrypt process")
+                
+                # Check if the resulting backup file is valid (non-empty)
+                check_backup_size(backup_file)
             finally:
                 # Clean up the temporary GPG directory
                 logging.info("Cleaning temporary GPG files...")
@@ -311,23 +354,39 @@ def compress_backup(
             with open(backup_file, "wb") as f_out:
                 # Run the dump process to collect backup data
                 dump_process = subprocess.Popen(
-                    command, env=env, stdout=subprocess.PIPE
+                    command,
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
                 )
+                
                 # Compress the backup data and write to the backup file
                 zip_process = subprocess.Popen(
                     [f"{compress_format}", f"-{compress_level}"],
                     stdin=dump_process.stdout,
                     stdout=f_out,
+                    stderr=subprocess.PIPE
                 )
-                # Close the pipe and wait for processes to complete
+                
+                # Close the stdout of the dump process to allow it to finish
                 dump_process.stdout.close()
-                # Wait for processes to complete and check exit codes
-                dump_exit_code = dump_process.wait()
-                check_exit_code(dump_exit_code)
-                zip_exit_code = zip_process.wait()
-                check_exit_code(zip_exit_code)
-                # Check if the resulting backup file is valid (non-empty)
-                check_backup_size(backup_file)
+                
+                # Wait for the processes to complete and capture their outputs
+                dump_output, dump_errors = dump_process.communicate()
+                if dump_errors:
+                    logging.warning(f"DUMP STDERR:\n\n{dump_errors}")
+                
+                check_exit_code(dump_process.returncode, "dump process")
+                
+                # Wait for the zip process
+                zip_output, zip_errors = zip_process.communicate()
+                if zip_errors:
+                    logging.warning(f"ZIP STDERR:\n\n{zip_errors}")
+                
+                check_exit_code(zip_process.returncode, "zip process")
+            
+            # Check if the resulting backup file is valid (non-empty)
+            check_backup_size(backup_file)
     except Exception as e:
         # Log any errors encountered during the compression process and exit
         logging.error(f"Error during backup compression: {str(e)}")
@@ -354,6 +413,7 @@ def encrypt_backup(command, env, backup_file, encrypt_password):
 
     # Path for the gpg password file
     gpg_pass_file = gpg_tmp_dir + "/passfile"
+    
     # Write the password to a temporary file
     with open(gpg_pass_file, "w") as pass_file:
         pass_file.write(encrypt_password)
@@ -366,36 +426,56 @@ def encrypt_backup(command, env, backup_file, encrypt_password):
         gpg_tmp_dir,
         "--batch",
         "--yes",
-        # "--passphrase",
-        # encrypt_password,
         "--symmetric",
         "--passphrase-file",
         gpg_pass_file,
+        # "--passphrase",
+        # encrypt_password,
     ]
 
     try:
         # Open the backup file to write encrypted data
         with open(backup_file, "wb") as f_out:
             # Start the dump process to get the backup data
-            dump_process = subprocess.Popen(command, env=env, stdout=subprocess.PIPE)
+            dump_process = subprocess.Popen(
+                command,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            
             # Start the encryption process, piping the dump output to GPG
             encrypt_process = subprocess.Popen(
-                encrypt_command, stdin=dump_process.stdout, stdout=f_out
+                encrypt_command,
+                stdin=dump_process.stdout,
+                stdout=f_out,
+                stderr=subprocess.PIPE
             )
-            # Close the stdout of the dump process after passing it to the encryption
+            
+            # Close the stdout of the dump process to allow it to finish
             dump_process.stdout.close()
-            # Wait for the dump process to complete and check for errors
-            dump_exit_code = dump_process.wait()
-            check_exit_code(dump_exit_code)
-            # Wait for the encryption process to complete and check for errors
-            encrypt_exit_code = encrypt_process.wait()
-            check_exit_code(encrypt_exit_code)
-            # Verify the resulting backup file size to ensure it is valid
-            check_backup_size(backup_file)
+            
+            # Wait for the processes to complete and capture their outputs
+            dump_output, dump_errors = dump_process.communicate()
+            if dump_errors:
+                logging.warning(f"DUMP STDERR:\n\n{dump_errors}")
+            
+            check_exit_code(dump_process.returncode, "dump_process")
+            
+            # Wait for the encrypt process
+            encrypt_output, encrypt_errors = encrypt_process.communicate()
+            if encrypt_errors:
+                logging.warning(f"ENCRYPT STDERR:\n\n{encrypt_errors}")
+            
+            check_exit_code(encrypt_process.returncode, "encrypt process")
+        
+        # Verify the resulting backup file size to ensure it is valid
+        check_backup_size(backup_file)
     except Exception as e:
         # Log any errors that occur during the encryption process and exit
         logging.error(f"Error during backup encryption: {str(e)}")
         exit(1)
+    
     finally:
         # Clean up the temporary GPG directory
         logging.info("Cleaning temporary GPG files...")
@@ -403,7 +483,6 @@ def encrypt_backup(command, env, backup_file, encrypt_password):
 
     # Return the final encrypted backup file path
     return backup_file
-
 
 def zabbix_sender(zbx_config, zbx_key, zbx_value, zbx_extra_params):
     """Send backup completion data to Zabbix"""
@@ -432,7 +511,18 @@ def zabbix_sender(zbx_config, zbx_key, zbx_value, zbx_extra_params):
 
     try:
         # Execute the command and raise an error if it fails
-        subprocess.run(command, check=True)
+        zbx_process = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            check=True
+        )
+        
+        if zbx_process.stdout:
+            logging.info(f"ZABBIX STDOUT:\n\n{zbx_process.stdout}")
+        if zbx_process.stderr:
+            logging.warning(f"ZABBIX STDERR:\n\n{zbx_process.stderr}")
     except subprocess.CalledProcessError as e:
         # Log any errors that occur during the data sending process
         logging.error(f"Error sending data to Zabbix: {str(e)}")
@@ -473,6 +563,7 @@ def main_file():
         if not filename:
             dir_path = os.path.abspath(source_dir)
             dir_name = os.path.basename(dir_path)
+            
             if label_keep:
                 backup_file = os.path.join(output_dir, f"{dir_name}_backup_keep_{TIMESTAMP}.tar")
             elif label_weekly:
@@ -487,6 +578,8 @@ def main_file():
         # Prepare the command to create a tar archive
         command = [
             "tar",
+            # "--warning=no-file-changed",
+            # "--ignore-failed-read",
             "--create",
             f"--file={backup_file}",
             f"--directory={source_dir}",
@@ -510,6 +603,7 @@ def main_file():
             # Split parameters and find the position to insert
             params_to_add = extra_params.split()
             position = command.index("--create") + 1
+            
             for param in params_to_add:
                 command.insert(position, param)
                 position += 1  # Shift position after each inserted parameter
@@ -517,6 +611,7 @@ def main_file():
         # If using SSH, prepare the SSH command
         if ssh_host:
             check_utility("ssh")
+            
             ssh_prefix = [
                 "ssh",
                 "-q",
@@ -527,6 +622,7 @@ def main_file():
                 "-l", ssh_user,
                 "-i", ssh_key,
             ]
+            
             command = ssh_prefix + command # Prepend SSH command to tar command
 
         # Set any custom environment variable for the backup process
@@ -557,14 +653,33 @@ def main_file():
                         # Handle backup using SSH
                         with open(backup_file, "wb") as f_out:
                             tar_process = subprocess.Popen(
-                                command, env=env, stdout=f_out
+                                command, env=env, stdout=f_out, stderr=subprocess.PIPE
                             )
-                            tar_exit_code = tar_process.wait()
-                            check_exit_code(tar_exit_code)
+                            
+                            # Wait for the encrypt process
+                            tar_output, tar_errors = encrypt_process.communicate()
+                            if tar_errors:
+                                logging.warning(f"TAR STDERR:\n\n{tar_errors}")
+                            
+                            check_exit_code(tar_process.returncode, "tar process")
+                        
                         check_backup_size(backup_file)
                     else:
                         # Run the tar command directly without SSH
-                        subprocess.run(command, check=True)
+                        tar_process = subprocess.run(
+                            command,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            universal_newlines=True,
+                            # check=True
+                        )
+                        
+                        if tar_process.stdout:
+                            logging.info(f"TAR STDOUT:\n\n{tar_process.stdout}")
+                        
+                        if tar_process.stderr:
+                            logging.warning(f"TAR STDERR:\n\n{tar_process.stderr}")
+                        
                         check_backup_size(backup_file)
             logging.info(f"File backup successfully created: {backup_file}")
         except Exception as e:
@@ -604,13 +719,16 @@ def main_file():
         if source_file:
             file_list = []
             source_file_list = source_file.split()
+            
             for file in source_file_list:
                 # Construct file paths based on whether using SSH
                 if ssh_host:
                     file_iter = f":{source_dir}/{file}"
                 else:
                     file_iter = f"{source_dir}/{file}"
+                
                 file_list.append(file_iter)
+            
             command[7:8] = file_list # Replace the source_dir in command
 
         # Add extra parameters for the backup command if provided
@@ -620,8 +738,10 @@ def main_file():
         # If using SSH, prepare the SSH command
         if ssh_host:
             check_utility("ssh") # Check for SSH utility
+            
             if not source_file:
                 command[7] = f":{source_dir}" # Adjust for SSH source if no specific files
+            
             command.extend(
                 ["-e", f"ssh -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {ssh_host} -p {ssh_port} -l {ssh_user} -i {ssh_key}"]
             )
@@ -634,7 +754,22 @@ def main_file():
 
         try:
             # Run the rsync command and check for errors
-            subprocess.run(command, check=True)
+            rsync_process = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                check=True
+            )
+            
+            if rsync_process.stdout:
+                logging.info(f"RSYNC STDOUT:\n\n{rsync_process.stdout}")
+            
+            if rsync_process.stderr:
+                logging.warning(f"RSYNC STDERR:\n\n{rsync_process.stderr}")
+            
+            check_backup_size(backup_file)
+            
             logging.info(f"File backup successfully created at: {output_dir}")
         except subprocess.CalledProcessError as e:
             logging.error(f"Error during file backup with rsync: {str(e)}")
@@ -694,6 +829,7 @@ def main_file():
                 args.ssh_user,
                 args.ssh_key,
             )
+        
         # If Zabbix config and key are provided, set the value to success
         if args.zbx_config and args.zbx_key:
             global zbx_value
@@ -763,17 +899,21 @@ def main_db():
                 f"--username={db_user}",
                 f"--file={backup_file}",
             ]
+            
             # (REQUIRED) Set the PostgreSQL password environment variable
             env = os.environ.copy()
             env["PGPASSWORD"] = db_password
         elif args.db_tool == "mysqldump":
             # Path for the temporary MySQL config file
             mysql_config_path = SCRIPT_DIR + "/.mysql_temp.cnf"
+            
             # Write the password to a temporary MySQL config file
             with open(mysql_config_path, "w") as mysql_config:
                 mysql_config.write(f"[client]\npassword={db_password}\n")
+            
             # Set file permissions to read-only for the owner
             os.chmod(mysql_config_path, 0o400)
+
             command = [
                 "mysqldump",
                 f"--defaults-extra-file={mysql_config_path}",
@@ -784,6 +924,7 @@ def main_db():
                 db_name,
                 f"--result-file={backup_file}",
             ]
+            
             # Set any custom environment variable for backup
             env = os.environ.copy()
             env["B4CKUP_ENV"] = "True"
@@ -800,6 +941,7 @@ def main_db():
                     del command[5]
                 elif args.db_tool == "mysqldump":
                     del command[6]
+                
                 backup_file = compress_backup(
                     command,
                     env,
@@ -815,12 +957,27 @@ def main_db():
                         del command[5]
                     elif args.db_tool == "mysqldump":
                         del command[6]
-                    result_file = encrypt_backup(
+                    
+                    backup_file = encrypt_backup(
                         command, env, backup_file, encrypt_password
                     )
                 else:
                     # Execute the command to perform the backup
-                    subprocess.run(command, env=env, check=True)
+                    db_process = subprocess.run(
+                        command,
+                        env=env,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        universal_newlines=True,
+                        check=True
+                    )
+                    
+                    if db_process.stdout:
+                            logging.info(f"{args.db_tool.upper()} STDOUT:\n\n{db_process.stdout}")
+                    
+                    if db_process.stderr:
+                        logging.warning(f"{args.db_tool.upper()} STDERR:\n\n{db_process.stderr}")
+                    
                     check_backup_size(backup_file) # Check backup file size
             logging.info(f"{db_type} backup successfully created: {backup_file}")
         except subprocess.CalledProcessError as e:
@@ -922,6 +1079,7 @@ def main_db():
                 db_port=db_port,
                 local_forward_port=local_forward_port,
             )
+            
             db_host = "127.0.0.1" # Use local address for database host
             db_port = local_forward_port # Use local forward port for database
         else:
@@ -944,6 +1102,7 @@ def main_db():
             args.label_weekly,
             args.label_monthly,
         )
+        
         # If Zabbix config and key are provided, set the value to success
         if args.zbx_config and args.zbx_key:
             global zbx_value
@@ -995,7 +1154,10 @@ for tool_parser in [tar_parser, rsync_parser, postgresql_parser, mysql_parser]:
         is_config_file=True,
         help="path to YAML config file (command line arguments override config file values)",
     )
-    tool_parser.add_argument("--silent", action="store_true", help="Enable quiet mode")
+    # Mutually exclusive group for logging
+    logging_group = tool_parser.add_mutually_exclusive_group()
+    logging_group.add_argument("--logfile", action="store_true", help="write log in file")
+    logging_group.add_argument("--silent", action="store_true", help="enable quiet mode")
 
 # Add database specific arguments for PostgreSQL and MySQL
 for tool_parser in [postgresql_parser, mysql_parser]:
@@ -1148,9 +1310,11 @@ def get_env_value(value):
 
     env_var_pattern = re.compile(r"^\$([A-Z_][A-Z0-9_]*)$", re.IGNORECASE) # Regex pattern for environment variables
     match = env_var_pattern.match(value) # Check if the value matches the pattern
+    
     if match:
         env_var = match.group(1) # Extract the variable name
         return os.getenv(env_var, value) # Return the value from the environment or the original value
+    
     return value # Return the original value if no match
 
 # Loop through all arguments and reassign with environment variable values if applicable
@@ -1171,10 +1335,13 @@ if args.mode == "db":
         parser.error(
             "Required parameters to backup database: --db-host, --db-name, --db-user, --db-password or --db-password-input"
         )
+    
     if (args.keep_weekly or args.keep_monthly) and not args.remove_old:
         parser.error("Required parameter to delete old backups: --remove-old")
+    
     if (args.compress_format or args.compress_level) and not args.compress:
         parser.error("Required parameter to use compression: --compress")
+    
     if (args.ssh_host or args.ssh_port or args.ssh_user or args.ssh_key) and not (
         args.ssh_host and args.ssh_port and args.ssh_user and args.ssh_key
     ):
@@ -1186,8 +1353,10 @@ if args.mode == "file":
     if args.file_tool == "tar":
         if (args.keep_weekly or args.keep_monthly) and not args.remove_old:
             parser.error("Required parameter to delete old backups: --remove-old")
+        
         if (args.compress_format or args.compress_level) and not args.compress:
             parser.error("Required parameter to use compression: --compress")
+    
     if (args.ssh_host or args.ssh_port or args.ssh_user or args.ssh_key) and not (
         args.ssh_host and args.ssh_port and args.ssh_user and args.ssh_key
     ):
@@ -1201,17 +1370,40 @@ if (args.zbx_config and not args.zbx_key) or (args.zbx_key and not args.zbx_conf
 
 
 # Configure logging
-if not args.silent:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[%(asctime)s] - [%(levelname)s] - %(message)s",
-        handlers=[logging.StreamHandler()],
-    )
-    logging.info("*** STARTING BACKUP PYTHON SCRIPT ***")
-else:
+if args.silent:
+    # Set logging level higher than CRITICAL to suppress all logging output
     logging.basicConfig(
         level=logging.CRITICAL + 1
     )
+else:
+    if args.logfile:
+        # Define the log file name based on the script's file name
+        LOG_FILE = os.path.splitext(os.path.realpath(__file__))[0] + ".log"
+        
+        # Check if the log file exists, and if so, clear its contents
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE, 'w') as file:
+                pass # Clear the file by opening it in write mode
+        
+        # Set up logging to both file and console if a log file is specified
+        log_handlers = [logging.FileHandler(LOG_FILE), logging.StreamHandler()]
+    else:
+        # Otherwise, set up logging only to console
+        log_handlers = [logging.StreamHandler()]
+    
+    # Configure logging with specified level, format, and handlers
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(asctime)s] - [%(levelname)s] - %(message)s",
+        handlers=log_handlers
+    )
+    
+    # Log startup message
+    logging.info("*** STARTING BACKUP PYTHON SCRIPT ***")
+    
+    # Log the location of the log file if specified
+    if args.logfile:
+        logging.info(f"Log file: {LOG_FILE}")
 
 
 ###################
