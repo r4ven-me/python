@@ -5,19 +5,20 @@
 ### Tar arguments ###
 #####################
 
-# logfile: true
+# logfile: /path/to/file.log
+# logfile-append: true
 # silent: true
 # source-dir: /path/to/source/dir
 # source-file: "file1 file2 file3 dir1 dir2"
 # output-dir: /path/to/output/dir
 # extra-params: "--verbose"
 # filename: custom_backup_file_name
-# remove-old: 14
-# keep-weekly: 2
-# keep-monthly: 1
 # label-keep: true
 # label-weekly: true
 # label-monthly: true
+# remove-old: 14
+# keep-weekly: 2
+# keep-monthly: 1
 # compress: true
 # compress-format: bzip2
 # compress-level: 9
@@ -35,7 +36,8 @@
 ### Rsync arguments ###
 #######################
 
-# logfile: true
+# logfile: /path/to/file.log
+# logfile-append: true
 # silent: true
 # source-dir: /path/to/source/dir
 # source-file: "file1 file2 file3 dir1 dir2"
@@ -54,6 +56,7 @@
 ##########################
 
 # logfile: true
+# logfile-append: true
 # silent: true
 # db-host: 127.0.0.1
 # db-port: 5432
@@ -64,12 +67,12 @@
 # output-dir: /path/to/output/dir
 # extra-params: "--schema-only"
 # filename: custom_backup_file_name
-# remove-old: 30
-# keep-weekly: 5
-# keep-monthly: 2
 # label-keep: true
 # label-weekly: true
 # label-monthly: true
+# remove-old: 30
+# keep-weekly: 5
+# keep-monthly: 2
 # compress: true
 # compress-format: xz
 # compress-level: 9
