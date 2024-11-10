@@ -1434,7 +1434,7 @@ def main():
                 "Required parameters to backup database: --db-host, --db-name, --db-user, --db-password or --db-password-input"
             )
         
-        if (args.keep_weekly or args.keep_monthly) and not args.remove_old:
+        if (args.keep or args.keep_weekly or args.keep_monthly) and not args.remove_old:
             parser.error("Required parameter to delete old backups: --remove-old")
         
         if (args.compress_format or args.compress_level) and not args.compress:
@@ -1616,8 +1616,8 @@ output-dir: /path/to/output/dir
 ### Mysqldump arguments ###
 ###########################
 
-# logfile: overwrite
-# silent: true
+# logfile: /path/to/file.log
+# logfile-append: true
 db-host: 127.0.0.1
 db-port: 3306
 db-name: mysql
@@ -1631,6 +1631,7 @@ output-dir: /path/to/output/dir
 # label-weekly: true
 # label-monthly: true
 # remove-old: 60
+# keep: true
 # keep-weekly: 10
 # keep-monthly: 4
 # compress: true
