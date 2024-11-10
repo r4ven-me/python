@@ -1518,134 +1518,134 @@ def main():
 
     # Config generation for the selected backup tool
     tar_config = """\
-    #####################
-    ### Tar arguments ###
-    #####################
+#####################
+### Tar arguments ###
+#####################
 
-    # logfile: /path/to/file.log
-    # logfile-append: true
-    # silent: true
-    source-dir: /path/to/source/dir
-    # source-file: "file1 file2 file3 dir1 dir2"
-    output-dir: /path/to/output/dir
-    # extra-params: "--verbose"
-    # filename: custom_backup_file_name
-    # label-keep: true
-    # label-weekly: true
-    # label-monthly: true
-    # remove-old: 14
-    # keep: true
-    # keep-weekly: 2
-    # keep-monthly: 1
-    # compress: true
-    # compress-format: gzip
-    # compress-level: 9
-    # encrypt-password: "Pa$$W0rd"
-    # encrypt-password-input: true
-    # ssh-host: example.com
-    # ssh-port: 22
-    # ssh-user: user
-    # ssh-key: /path/to/ssh/private/key
-    # zbx-config: /path/to/zabbix_agent.conf
-    # zbx-key: backup.status
-    # zbx-extra-params: "-vv"
+# logfile: /path/to/file.log
+# logfile-append: true
+# silent: true
+source-dir: /path/to/source/dir
+# source-file: "file1 file2 file3 dir1 dir2"
+output-dir: /path/to/output/dir
+# extra-params: "--verbose"
+# filename: custom_backup_file_name
+# label-keep: true
+# label-weekly: true
+# label-monthly: true
+# remove-old: 14
+# keep: true
+# keep-weekly: 2
+# keep-monthly: 1
+# compress: true
+# compress-format: gzip
+# compress-level: 9
+# encrypt-password: "Pa$$W0rd"
+# encrypt-password-input: true
+# ssh-host: example.com
+# ssh-port: 22
+# ssh-user: user
+# ssh-key: /path/to/ssh/private/key
+# zbx-config: /path/to/zabbix_agent.conf
+# zbx-key: backup.status
+# zbx-extra-params: "-vv"
     """
 
     rsync_config = """\
-    #######################
-    ### Rsync arguments ###
-    #######################
+#######################
+### Rsync arguments ###
+#######################
 
-    # logfile: true
-    # logfile-append: true
-    # silent: true
-    source-dir: /path/to/source/dir
-    # source-file: "file1 file2 file3 dir1 dir2"
-    output-dir: /path/to/output/dir
-    # extra-params: "--verbose"
-    # ssh-host: example.com
-    # ssh-port: 22
-    # ssh-user: user
-    # ssh-key: /path/to/ssh/private/key
-    # zbx-config: /path/to/zabbix_agent.conf
-    # zbx-key: backup.status
-    # zbx-extra-params: "-vv"
+# logfile: true
+# logfile-append: true
+# silent: true
+source-dir: /path/to/source/dir
+# source-file: "file1 file2 file3 dir1 dir2"
+output-dir: /path/to/output/dir
+# extra-params: "--verbose"
+# ssh-host: example.com
+# ssh-port: 22
+# ssh-user: user
+# ssh-key: /path/to/ssh/private/key
+# zbx-config: /path/to/zabbix_agent.conf
+# zbx-key: backup.status
+# zbx-extra-params: "-vv"
     """
 
     pg_dump_config = """\
-    #########################
-    ### Pg_dump arguments ###
-    #########################
+#########################
+### Pg_dump arguments ###
+#########################
 
-    # logfile: /path/to/file.log
-    # logfile-append: true
-    # silent: true
-    db-host: 127.0.0.1
-    db-port: 5432
-    db-name: postgres
-    db-user: postgres
-    db-password: "$B4CKUP_DB_PASSWORD"
-    # db-password-input: true
-    output-dir: /path/to/output/dir
-    # extra-params: "--schema-only --verbose"
-    # filename: custom_backup_file_name
-    # label-keep: true
-    # label-weekly: true
-    # label-monthly: true
-    # remove-old: 30
-    # keep: true
-    # keep-weekly: 5
-    # keep-monthly: 2
-    # compress: true
-    # compress-format: bzip2
-    # compress-level: 9
-    # encrypt-password: Pa$$w0rD
-    # encrypt-password-input: true
-    # ssh-host: example.com
-    # ssh-port: 22
-    # ssh-user: user
-    # ssh-key: /path/to/ssh/private/key
-    # local-forward-port: 7777
-    # zbx-config: /path/to/zabbix_agent.conf
-    # zbx-key: backup.status
-    # zbx-extra-params: "-vv"
+# logfile: /path/to/file.log
+# logfile-append: true
+# silent: true
+db-host: 127.0.0.1
+db-port: 5432
+db-name: postgres
+db-user: postgres
+db-password: "$B4CKUP_DB_PASSWORD"
+# db-password-input: true
+output-dir: /path/to/output/dir
+# extra-params: "--schema-only --verbose"
+# filename: custom_backup_file_name
+# label-keep: true
+# label-weekly: true
+# label-monthly: true
+# remove-old: 30
+# keep: true
+# keep-weekly: 5
+# keep-monthly: 2
+# compress: true
+# compress-format: bzip2
+# compress-level: 9
+# encrypt-password: Pa$$w0rD
+# encrypt-password-input: true
+# ssh-host: example.com
+# ssh-port: 22
+# ssh-user: user
+# ssh-key: /path/to/ssh/private/key
+# local-forward-port: 7777
+# zbx-config: /path/to/zabbix_agent.conf
+# zbx-key: backup.status
+# zbx-extra-params: "-vv"
     """
 
     mysqldump_config = """\
-    ###########################
-    ### Mysqldump arguments ###
-    ###########################
+###########################
+### Mysqldump arguments ###
+###########################
 
-    # logfile: overwrite
-    # silent: true
-    db-host: 127.0.0.1
-    db-port: 3306
-    db-name: mysql
-    db-user: mysql
-    db-password: "$B4CKUP_DB_PASSWORD"
-    # db-password-input: true
-    output-dir: /path/to/output/dir
-    # extra-params: "--no-data --single-transaction"
-    # filename: custom_backup_file_name
-    # label-keep: true
-    # label-weekly: true
-    # label-monthly: true
-    # remove-old: 60
-    # keep-weekly: 10
-    # keep-monthly: 4
-    # compress: true
-    # compress-format: xz
-    # compress-level: 9
-    # encrypt-password: "$B4CKUP_GPG_PASSWORD"
-    # encrypt-password-input: true
-    # ssh-host: example.com
-    # ssh-port: 22
-    # ssh-user: user
-    # ssh-key: /path/to/ssh/private/key
-    # local-forward-port: 7777
-    # zbx-config: /path/to/zabbix_agent.conf
-    # zbx-key: backup.status
-    # zbx-extra-params: "-vv"
+# logfile: overwrite
+# silent: true
+db-host: 127.0.0.1
+db-port: 3306
+db-name: mysql
+db-user: mysql
+db-password: "$B4CKUP_DB_PASSWORD"
+# db-password-input: true
+output-dir: /path/to/output/dir
+# extra-params: "--no-data --single-transaction"
+# filename: custom_backup_file_name
+# label-keep: true
+# label-weekly: true
+# label-monthly: true
+# remove-old: 60
+# keep-weekly: 10
+# keep-monthly: 4
+# compress: true
+# compress-format: xz
+# compress-level: 9
+# encrypt-password: "$B4CKUP_GPG_PASSWORD"
+# encrypt-password-input: true
+# ssh-host: example.com
+# ssh-port: 22
+# ssh-user: user
+# ssh-key: /path/to/ssh/private/key
+# local-forward-port: 7777
+# zbx-config: /path/to/zabbix_agent.conf
+# zbx-key: backup.status
+# zbx-extra-params: "-vv"
     """
 
     # if '--config-gen' in sys.argv:
