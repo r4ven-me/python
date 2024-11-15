@@ -83,13 +83,20 @@ def main():
 
         errors_list = [
             "tar error",
+            "tar: error",
+            "tar: cannot open",
+            "tar: cannot stat",
             "rsync: error",
+            "rsync: connection unexpectedly closed",
+            "rsync: failed",
+            "rsync: recv_generator: mkdir failed",
             "pg_dump: error: connection",
+            "pg_dump: fatal",
             "pg_dump: unrecognized option",
-            "mysqldump: unknown option",
             "mysqldump: Got error: 1044",
             "mysqldump: Got error: 1045",
-            "mysqldump: Got error: 2013"
+            "mysqldump: Got error: 2013",
+            "mysqldump: unknown option",
         ]
 
         for error in errors_list:
@@ -702,7 +709,7 @@ def main():
                                 ) as tar_process:
                                     for line in tar_process.stderr:
                                         logging.info(f"[{backup_tool.upper()}] | {line.rstrip().decode()}")
-                                        check_stderr(line, command)
+                                        check_stderr(line.decode(), command)
 
                                     # Wait for the process to complete
                                     tar_process.communicate()
@@ -1618,6 +1625,7 @@ output-dir: /path/to/output/dir
 
 # logfile: /path/to/file.log
 # logfile-append: true
+# silent: true
 db-host: 127.0.0.1
 db-port: 3306
 db-name: mysql
