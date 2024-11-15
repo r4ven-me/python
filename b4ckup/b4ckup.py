@@ -100,7 +100,7 @@ def main():
         ]
 
         for error in errors_list:
-            if error in line.rstrip().lower():
+            if error.lower() in line.rstrip().lower():
                 logging.error(f"Error during exec command: {command}")
                 # raise ChildProcessError(f"Error in command: {command}")
                 exit(1)
