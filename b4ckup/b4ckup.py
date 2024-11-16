@@ -2,7 +2,7 @@
 
 """Backup script for files (tar, rsync) and databases (pg_dump, mysqldump)"""
 # -*- coding: utf-8 -*-
-__version__ = "0.9.5"
+__version__ = "0.9.7"
 __status__ = "test"
 __author__ = "Ivan Cherniy"
 __email__ = "kar-kar@r4ven.me"
@@ -296,7 +296,7 @@ def main():
         )
 
         # Add appropriate file extension based on compression format
-        if compress_format == "gzip":
+        if compress_format in ["gzip", "pigz"]:
             backup_file += ".gz"
         elif compress_format == "xz":
             backup_file += ".xz"
@@ -606,6 +606,7 @@ def main():
             ssh_port,
             ssh_user,
             ssh_key,
+            ssh_extra_params,
             label_keep,
             label_weekly,
             label_monthly,
@@ -667,6 +668,7 @@ def main():
                 ssh_prefix = [
                     "ssh",
                     "-q",
+                    *(ssh_extra_params.split() if ssh_extra_params else []),
                     "-o", "StrictHostKeyChecking=no",
                     "-o", "UserKnownHostsFile=/dev/null",
                     ssh_host,
@@ -755,6 +757,7 @@ def main():
             ssh_port,
             ssh_user,
             ssh_key,
+            ssh_extra_params
         ):
             """Backup files with rsync"""
 
@@ -801,8 +804,11 @@ def main():
                 if not source_file:
                     command[7] = f":{source_dir}" # Adjust for SSH source if no specific files
                 
+                if not ssh_extra_params:
+                    ssh_extra_params = ""
+
                 command.extend(
-                    ["-e", f"ssh -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {ssh_host} -p {ssh_port} -l {ssh_user} -i {ssh_key}"]
+                    ["-e", f"ssh -q {ssh_extra_params} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {ssh_host} -p {ssh_port} -l {ssh_user} -i {ssh_key}"]
                 )
 
             # Set any custom environment variable for the backup process
@@ -877,6 +883,7 @@ def main():
                     args.ssh_port,
                     args.ssh_user,
                     args.ssh_key,
+                    args.ssh_extra_params,
                     args.label_keep,
                     args.label_weekly,
                     args.label_monthly,
@@ -891,6 +898,7 @@ def main():
                     args.ssh_port,
                     args.ssh_user,
                     args.ssh_key,
+                    args.ssh_extra_params,
                 )
             
             # If Zabbix config and key are provided, set the value to success
@@ -1053,7 +1061,7 @@ def main():
 
         # SSH tunneling
         def open_ssh_tunnel(
-            ssh_host, ssh_port, ssh_user, ssh_key, db_host, db_port, local_forward_port
+            ssh_host, ssh_port, ssh_user, ssh_key, ssh_extra_params, db_host, db_port, local_forward_port
         ):
             """Open SSH tunnel using a private key"""
 
@@ -1064,6 +1072,7 @@ def main():
             ssh_command = [
                 "ssh",
                 "-q",
+                *(ssh_extra_params.split() if ssh_extra_params else []),
                 "-f",
                 "-o", "StrictHostKeyChecking=no",
                 "-o", "UserKnownHostsFile=/dev/null",
@@ -1137,6 +1146,7 @@ def main():
                     ssh_port=args.ssh_port,
                     ssh_user=args.ssh_user,
                     ssh_key=args.ssh_key,
+                    ssh_extra_params=args.ssh_extra_params,
                     db_host=args.db_host,
                     db_port=db_port,
                     local_forward_port=local_forward_port
@@ -1348,9 +1358,9 @@ def main():
         tool_parser.add_argument("--compress", action="store_true", help="compress backup")
         tool_parser.add_argument(
             "--compress-format",
-            choices=["gzip", "xz", "bzip2"],
+            choices=["gzip", "xz", "bzip2", "pigz"],
             metavar="FORMAT",
-            help="compression format: gzip, xz, bzip2",
+            help="compression format: gzip, xz, bzip2, pigz",
         )
         tool_parser.add_argument(
             "--compress-level",
@@ -1377,7 +1387,13 @@ def main():
         tool_parser.add_argument("--ssh-user", metavar="USER", help="SSH username")
         tool_parser.add_argument(
             "--ssh-key", metavar="PATH", help="path to SSH private key file"
-        )
+        ),
+        tool_parser.add_argument(
+            "--ssh-extra-params",
+            metavar="PARAMS",
+            help="extra parameters (in quotes) for SSH"
+        ),
+
 
     # Add local forward port argument for database tools
     for tool_parser in [postgresql_parser, mysql_parser]:
@@ -1462,7 +1478,7 @@ def main():
             if (args.compress_format or args.compress_level) and not args.compress:
                 parser.error("Required parameter to use compression: --compress")
         
-        if (args.ssh_host or args.ssh_port or args.ssh_user or args.ssh_key) and not (
+        if (args.ssh_host or args.ssh_port or args.ssh_user or args.ssh_key or args.ssh_extra_params) and not (
             args.ssh_host and args.ssh_port and args.ssh_user and args.ssh_key
         ):
             parser.error(
@@ -1514,10 +1530,14 @@ def main():
                 handlers=log_handlers
             )
             
+            # Print the dividing line
+            terminal_width = os.get_terminal_size().columns
+            first_line = "*" * terminal_width
+
+            print(first_line)
+
             # Log startup message
-            logging.info("*************************************")
-            logging.info("*** STARTING BACKUP PYTHON SCRIPT ***")
-            logging.info("*************************************")
+            logging.info("STARTING BACKUP PYTHON SCRIPT")
             
             # Log the location of the log file if specified
             if args.logfile:
@@ -1553,6 +1573,7 @@ output-dir: /path/to/output/dir
 # ssh-port: 22
 # ssh-user: user
 # ssh-key: /path/to/ssh/private/key
+# ssh-extra-params: "-C -v"
 # zbx-config: /path/to/zabbix_agent.conf
 # zbx-key: backup.status
 # zbx-extra-params: "-vv"
@@ -1574,6 +1595,7 @@ output-dir: /path/to/output/dir
 # ssh-port: 22
 # ssh-user: user
 # ssh-key: /path/to/ssh/private/key
+# ssh-extra-params: "-C -v"
 # zbx-config: /path/to/zabbix_agent.conf
 # zbx-key: backup.status
 # zbx-extra-params: "-vv"
@@ -1612,6 +1634,7 @@ output-dir: /path/to/output/dir
 # ssh-port: 22
 # ssh-user: user
 # ssh-key: /path/to/ssh/private/key
+# ssh-extra-params: "-C -v"
 # local-forward-port: 7777
 # zbx-config: /path/to/zabbix_agent.conf
 # zbx-key: backup.status
@@ -1651,6 +1674,7 @@ output-dir: /path/to/output/dir
 # ssh-port: 22
 # ssh-user: user
 # ssh-key: /path/to/ssh/private/key
+# ssh-extra-params: "-C -v"
 # local-forward-port: 7777
 # zbx-config: /path/to/zabbix_agent.conf
 # zbx-key: backup.status

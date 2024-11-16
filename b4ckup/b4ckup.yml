@@ -28,6 +28,7 @@
 # ssh-port: 22
 # ssh-user: user
 # ssh-key: /path/to/ssh/private/key
+# ssh-extra-params: "-C -v"
 # zbx-config: /path/to/zabbix_agent.conf
 # zbx-key: backup.status
 # zbx-extra-params: "-vv"
@@ -47,6 +48,7 @@
 # ssh-port: 22
 # ssh-user: user
 # ssh-key: /path/to/ssh/private/key
+# ssh-extra-params: "-C -v"
 # zbx-config: /path/to/zabbix_agent.conf
 # zbx-key: backup.status
 # zbx-extra-params: "-vv"
@@ -82,6 +84,7 @@
 # ssh-port: 22
 # ssh-user: user
 # ssh-key: /path/to/ssh/private/key
+# ssh-extra-params: "-C -v"
 # local-forward-port: 7777
 # zbx-config: /path/to/zabbix_agent.conf
 # zbx-key: backup.status
