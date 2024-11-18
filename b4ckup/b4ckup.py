@@ -1531,11 +1531,16 @@ def main():
             )
             
             # Print the dividing line
-            terminal_width = os.get_terminal_size().columns
-            first_line = "*" * (terminal_width - 37)
+            try:
+                terminal_width = os.get_terminal_size().columns
+                first_line = "*" * (terminal_width - 37)
+                logging.info(first_line)
+            except Exception:
+                first_line = "*" * 80
+                logging.info(first_line)
+                pass
 
             # Log startup message
-            logging.info(first_line)
             logging.info("STARTING BACKUP PYTHON SCRIPT")
             
             # Log the location of the log file if specified
