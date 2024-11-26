@@ -557,9 +557,9 @@ def main():
         if zbx_extra_params:
             command.extend(zbx_extra_params.split())
 
-        logging.info(
-            f"Sending backup status to Zabbix (1 = success, 0 = failure): {zbx_value}"
-        )
+        logging.info(f"Sending backup status to Zabbix (1 = success, 0 = failure)")
+        logging.info(f"Zabbix key: {zbx_key}")
+        logging.info(f"Zabbix value: {zbx_value}")
 
         try:
             # Execute the command and raise an error if it fails
