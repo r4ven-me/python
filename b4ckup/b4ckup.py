@@ -2,7 +2,7 @@
 
 """Backup script for files (tar, rsync) and databases (pg_dump, mysqldump)"""
 # -*- coding: utf-8 -*-
-__version__ = "0.9.7"
+__version__ = "0.9.8"
 __status__ = "test"
 __author__ = "Ivan Cherniy"
 __email__ = "kar-kar@r4ven.me"
@@ -29,7 +29,7 @@ import configargparse
 
 # Define global constants and paths
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
-LOCK_FILE = os.path.splitext(os.path.realpath(__file__))[0] + ".lock"
+# LOCK_FILE = os.path.splitext(os.path.realpath(__file__))[0] + ".lock"
 TIMESTAMP = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 zbx_value = "0"
 
@@ -228,6 +228,41 @@ def main():
 
         logging.info("Checking if a previous backup process is running...")
 
+        # Define the lock file name
+        if args.mode == "file":
+            if args.file_tool == "rsync":
+                lock_file = f"{args.file_tool}_{args.output_dir}"
+            elif args.file_tool == "tar":
+                
+                if not args.filename:
+                    dir_path = os.path.abspath(args.source_dir)
+                    dir_name = os.path.basename(dir_path)
+                    
+                    if args.label_keep:
+                        lock_file = f"{args.file_tool}_{dir_name}_keep"
+                    elif label_weekly:
+                        lock_file = f"{args.file_tool}_{dir_name}_weekly"
+                    elif label_monthly:
+                        lock_file = f"{args.file_tool}_{dir_name}_monthly"
+                    else:
+                        lock_file = f"{args.file_tool}_{dir_name}"
+                else:
+                    lock_file = f"{args.file_tool}_{args.filename}"
+        elif args.mode == "db":
+            if not args.filename:
+                if args.label_keep:
+                    lock_file = f"{args.db_tool}_{args.db_name}_keep"
+                elif args.label_weekly:
+                    lock_file = f"{args.db_tool}_{args.db_name}_weekly"
+                elif args.label_monthly:
+                    lock_file = f"{args.db_tool}_{args.db_name}_monthly"
+                else:
+                    lock_file = f"{args.db_tool}_{args.db_name}"
+            else:
+                lock_file = f"{args.file_tool}_{args.filename}"
+
+        LOCK_FILE = os.path.join(SCRIPT_DIR, lock_file + ".lock")
+
         # Check if the lock file already exists
         if os.path.exists(LOCK_FILE):
             while True:
@@ -261,9 +296,11 @@ def main():
         with open(LOCK_FILE, "w") as f:
             f.write(str(os.getpid()))
             logging.info(f"Lock file created: {LOCK_FILE}")
+        
+        return LOCK_FILE
 
 
-    def remove_lock_file():
+    def remove_lock_file(LOCK_FILE):
         """Remove the lock file to allow future backup processes to run"""
 
         # Check if the lock file exists
@@ -563,22 +600,40 @@ def main():
 
         try:
             # Execute the command and raise an error if it fails
-            with subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
-            ) as zbx_process:
-                for line in zbx_process.stdout:
-                    logging.info(f"[ZABBIX] | {line.rstrip()}")
-                    check_stderr(line, command)
-                    
-                for line in zbx_process.stderr:
-                    logging.info(f"[ZABBIX] | {line.rstrip()}")
-                    check_stderr(line, command)
+            # If the command is executed but data is not sent, then repeat 3 times
+            for _ in range(3):
+                fail = False
 
-                # Wait for the process to complete
-                zbx_process.communicate()
+                with subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    universal_newlines=True,
+                ) as zbx_process:
+                    for line in zbx_process.stdout:
+                        logging.info(f"[ZABBIX] | {line.rstrip()}")
+                        check_stderr(line, command)
+                        if "processed: 0" in line:
+                            fail = True
+                        
+                    for line in zbx_process.stderr:
+                        logging.info(f"[ZABBIX] | {line.rstrip()}")
+                        check_stderr(line, command)
+                        if "processed: 0" in line:
+                            fail = True
+
+                    # Wait for the process to complete
+                    zbx_process.communicate()
+                    
+                    if not fail:
+                        break
+                    else:
+                        logging.warning(
+                            f"Unable to send data to Zabbix server with config: {zbx_config} and key: {zbx_key}, retrying..."
+                        )
+                        time.sleep(2)
+                        continue
+
         except subprocess.CalledProcessError as e:
             # Log any errors that occur during the data sending process
             logging.error(f"Error sending data to Zabbix: {str(e)}", exc_info=True)
@@ -855,7 +910,7 @@ def main():
         # Check available disk space in the output directory
         check_disk_space(args.output_dir)
 
-        create_lock_file()# Create a lock file to prevent concurrent backups
+        LOCK_FILE = create_lock_file()# Create a lock file to prevent concurrent backups
 
         # Handle encryption password input
         if args.file_tool == "tar":
@@ -906,7 +961,10 @@ def main():
                 global zbx_value
                 zbx_value = "1"
         finally:
-            remove_lock_file() # Ensure lock file is removed after operation
+            print("")
+            print(LOCK_FILE)
+            print("")
+            remove_lock_file(LOCK_FILE) # Ensure lock file is removed after operation
 
 
     ########################
@@ -1107,7 +1165,7 @@ def main():
         # Check available disk space in the output directory
         check_disk_space(args.output_dir)
 
-        create_lock_file()# Create a lock file to prevent concurrent backups
+        LOCK_FILE = create_lock_file()# Create a lock file to prevent concurrent backups
 
         # Set default database port if not provided by the user
         if not args.db_port:
@@ -1180,7 +1238,7 @@ def main():
                 global zbx_value
                 zbx_value = "1"
         finally:
-            remove_lock_file() # Ensure the lock file is removed after operation
+            remove_lock_file(LOCK_FILE) # Ensure the lock file is removed after operation
 
 
     #########################
