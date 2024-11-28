@@ -229,46 +229,14 @@ def main():
         logging.info("Checking if a previous backup process is running...")
 
         # Define the lock file name
-        if args.mode == "file":
-            if args.file_tool == "rsync":
-                lock_file = f"{args.file_tool}_{args.output_dir}"
-            elif args.file_tool == "tar":
-                
-                if not args.filename:
-                    dir_path = os.path.abspath(args.source_dir)
-                    dir_name = os.path.basename(dir_path)
-                    
-                    if args.label_keep:
-                        lock_file = f"{args.file_tool}_{dir_name}_keep"
-                    elif label_weekly:
-                        lock_file = f"{args.file_tool}_{dir_name}_weekly"
-                    elif label_monthly:
-                        lock_file = f"{args.file_tool}_{dir_name}_monthly"
-                    else:
-                        lock_file = f"{args.file_tool}_{dir_name}"
-                else:
-                    lock_file = f"{args.file_tool}_{args.filename}"
-        elif args.mode == "db":
-            if not args.filename:
-                if args.label_keep:
-                    lock_file = f"{args.db_tool}_{args.db_name}_keep"
-                elif args.label_weekly:
-                    lock_file = f"{args.db_tool}_{args.db_name}_weekly"
-                elif args.label_monthly:
-                    lock_file = f"{args.db_tool}_{args.db_name}_monthly"
-                else:
-                    lock_file = f"{args.db_tool}_{args.db_name}"
-            else:
-                lock_file = f"{args.file_tool}_{args.filename}"
-
-        LOCK_FILE = os.path.join(SCRIPT_DIR, lock_file + ".lock")
+        lock_file  = os.path.join(SCRIPT_DIR, backup_id + ".lock")
 
         # Check if the lock file already exists
-        if os.path.exists(LOCK_FILE):
+        if os.path.exists(lock_file ):
             while True:
                 # Open the lock file and read the stored PID
-                if os.path.exists(LOCK_FILE):
-                    with open(LOCK_FILE, "r") as f:
+                if os.path.exists(lock_file ):
+                    with open(lock_file , "r") as f:
                         try:
                             # Try to parse the PID from the file
                             pid = int(f.read().strip())
@@ -293,21 +261,21 @@ def main():
                     break
 
         # Create or overwrite the lock file with the current process's PID
-        with open(LOCK_FILE, "w") as f:
+        with open(lock_file , "w") as f:
             f.write(str(os.getpid()))
-            logging.info(f"Lock file created: {LOCK_FILE}")
+            logging.info(f"Lock file created: {lock_file }")
         
-        return LOCK_FILE
+        return lock_file 
 
 
-    def remove_lock_file(LOCK_FILE):
+    def remove_lock_file(lock_file ):
         """Remove the lock file to allow future backup processes to run"""
 
         # Check if the lock file exists
-        if os.path.exists(LOCK_FILE):
+        if os.path.exists(lock_file ):
             try:
-                os.remove(LOCK_FILE)
-                logging.info(f"Lock file {LOCK_FILE} has been removed")
+                os.remove(lock_file )
+                logging.info(f"Lock file {lock_file } has been removed")
             except OSError as e:
                 logging.error(f"Error while removing lock file: {e}", exc_info=True)
 
@@ -350,7 +318,7 @@ def main():
                 backup_file += ".gpg"
                 
                 # Create a temporary directory for GPG encryption
-                gpg_tmp_dir = os.path.join(SCRIPT_DIR, ".gnupg")
+                gpg_tmp_dir = os.path.join(SCRIPT_DIR, f".{backup_id}_gnupg")
                 os.mkdir(gpg_tmp_dir, mode=0o700)
                 
                 # Path for the gpg password file
@@ -499,7 +467,7 @@ def main():
         backup_file += ".gpg"
 
         # Create a temporary directory for GPG encryption configuration
-        gpg_tmp_dir = os.path.join(SCRIPT_DIR, ".gnupg")
+        gpg_tmp_dir = os.path.join(SCRIPT_DIR, f".{backup_id}_gnupg")
         os.mkdir(gpg_tmp_dir, mode=0o700)
 
         # Path for the gpg password file
@@ -910,7 +878,7 @@ def main():
         # Check available disk space in the output directory
         check_disk_space(args.output_dir)
 
-        LOCK_FILE = create_lock_file()# Create a lock file to prevent concurrent backups
+        lock_file  = create_lock_file()# Create a lock file to prevent concurrent backups
 
         # Handle encryption password input
         if args.file_tool == "tar":
@@ -961,10 +929,7 @@ def main():
                 global zbx_value
                 zbx_value = "1"
         finally:
-            print("")
-            print(LOCK_FILE)
-            print("")
-            remove_lock_file(LOCK_FILE) # Ensure lock file is removed after operation
+            remove_lock_file(lock_file ) # Ensure lock file is removed after operation
 
 
     ########################
@@ -1034,7 +999,7 @@ def main():
                 env["PGPASSWORD"] = db_password
             elif args.db_tool == "mysqldump":
                 # Path for the temporary MySQL config file
-                mysql_config_path = SCRIPT_DIR + "/.mysql_temp.cnf"
+                mysql_config_path = SCRIPT_DIR + f"/.{backup_id}_mysql_temp.cnf"
                 
                 # Write the password to a temporary MySQL config file
                 with open(mysql_config_path, "w") as mysql_config:
@@ -1165,7 +1130,7 @@ def main():
         # Check available disk space in the output directory
         check_disk_space(args.output_dir)
 
-        LOCK_FILE = create_lock_file()# Create a lock file to prevent concurrent backups
+        lock_file  = create_lock_file()# Create a lock file to prevent concurrent backups
 
         # Set default database port if not provided by the user
         if not args.db_port:
@@ -1238,7 +1203,7 @@ def main():
                 global zbx_value
                 zbx_value = "1"
         finally:
-            remove_lock_file(LOCK_FILE) # Ensure the lock file is removed after operation
+            remove_lock_file(lock_file ) # Ensure the lock file is removed after operation
 
 
     #########################
@@ -1502,6 +1467,38 @@ def main():
         backup_tool = args.db_tool
     elif args.mode == "file":
         backup_tool = args.file_tool
+
+    # Define the backup id var
+    if args.mode == "file":
+        if args.file_tool == "rsync":
+            backup_id = f"{args.file_tool}_{args.output_dir}"
+        elif args.file_tool == "tar":
+            if not args.filename:
+                dir_path = os.path.abspath(args.source_dir)
+                dir_name = os.path.basename(dir_path)
+                
+                if args.label_keep:
+                    backup_id = f"{args.file_tool}_{dir_name}_keep"
+                elif label_weekly:
+                    backup_id = f"{args.file_tool}_{dir_name}_weekly"
+                elif label_monthly:
+                    backup_id = f"{args.file_tool}_{dir_name}_monthly"
+                else:
+                    backup_id = f"{args.file_tool}_{dir_name}"
+            else:
+                backup_id = f"{args.file_tool}_{args.filename}"
+    elif args.mode == "db":
+        if not args.filename:
+            if args.label_keep:
+                backup_id = f"{args.db_tool}_{args.db_name}_keep"
+            elif args.label_weekly:
+                backup_id = f"{args.db_tool}_{args.db_name}_weekly"
+            elif args.label_monthly:
+                backup_id = f"{args.db_tool}_{args.db_name}_monthly"
+            else:
+                backup_id = f"{args.db_tool}_{args.db_name}"
+        else:
+            backup_id = f"{args.file_tool}_{args.filename}"
 
     # Validate required arguments based on the selected mode (file or db)
     if args.mode == "db":
