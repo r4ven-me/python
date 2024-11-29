@@ -1479,9 +1479,9 @@ def main():
                 
                 if args.label_keep:
                     backup_id = f"{args.file_tool}_{dir_name}_keep"
-                elif label_weekly:
+                elif args.label_weekly:
                     backup_id = f"{args.file_tool}_{dir_name}_weekly"
-                elif label_monthly:
+                elif args.label_monthly:
                     backup_id = f"{args.file_tool}_{dir_name}_monthly"
                 else:
                     backup_id = f"{args.file_tool}_{dir_name}"
