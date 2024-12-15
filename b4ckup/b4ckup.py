@@ -93,6 +93,7 @@ def main():
             "pg_dump: error: connection",
             "pg_dump: fatal",
             "pg_dump: unrecognized option",
+            "pg_dump: error: aborting because of server version mismatch",
             "mysqldump: Got error: 1044",
             "mysqldump: Got error: 1045",
             "mysqldump: Got error: 2013",
