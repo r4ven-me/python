@@ -2,11 +2,11 @@
 
 """Backup script for files (tar, rsync) and databases (pg_dump, mysqldump)"""
 # -*- coding: utf-8 -*-
-__version__ = "0.9.8"
+__version__ = "1.0.0"
 __status__ = "test"
 __author__ = "Ivan Cherniy"
 __email__ = "kar-kar@r4ven.me"
-__copyright__ = "Copyright 2024, r4ven.me"
+__copyright__ = "Copyright 2025, r4ven.me"
 __license__ = "GPL3"
 
 ###############
@@ -18,1507 +18,1016 @@ import os
 import sys
 import subprocess
 import traceback
+import logging
 import time
 import datetime
-import shutil
-import psutil
-import logging
+import hashlib
 import re
 import getpass
+import shutil
+import psutil
 import configargparse
+
 
 # Define global constants and paths
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
-# LOCK_FILE = os.path.splitext(os.path.realpath(__file__))[0] + ".lock"
+SCRIPT_NAME = os.path.basename(sys.argv[0])
 TIMESTAMP = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-zbx_value = "0"
-
-def main():
-
-    def check_utility(utility_name):
-        """Check if a required utility is installed"""
-
-        if shutil.which(utility_name) is None:
-            logging.error(f"{utility_name} is not installed or not found in PATH", exc_info=True)
-            exit(1)
 
 
-    def check_disk_space(output_dir):
-        """Check available disk space in the output directory"""
+def get_env_value(env_value):
+    """Get the environment variable value if the input matches the pattern"""
 
-        logging.info("Checking available disk space...")
+    env_var_pattern = re.compile(
+        r"^\$([A-Z_][A-Z0-9_]*)$", re.IGNORECASE
+    )  # Regex pattern for environment variables
+    match = env_var_pattern.match(env_value)  # Check if the value matches the pattern
 
-        # Get the percentage of used disk space
-        disk_usage = psutil.disk_usage(output_dir)
-        disk_usage_percent = disk_usage.percent
-        free_space = disk_usage.free
+    if match:
+        env_var = match.group(1)  # Extract the variable name
+        return os.getenv(
+            env_var, env_value
+        )  # Return the value from the environment or the original value
 
-        for unit in ["B", "KiB", "MiB", "GiB", "TiB"]:
-            if free_space < 1024:
-                free_space_unit = f"{free_space:.2f} {unit}"
-                break
-            free_space /= 1024  # Convert to the next unit
-
-        # If disk usage exceeds 95%, exit with a warning
-        if disk_usage_percent > 95.0:
-            logging.warning(
-                f"More than 90% of disk space is used: {disk_usage_percent}%. Terminating..."
-            )
-            exit(1)
-        else:
-            logging.info(f"Disk usage: {disk_usage_percent}%")
-            logging.info(f"Free space: {free_space_unit}")
-
-    def check_exit_code(code, process):
-        """Check return code of process result"""
-        
-        # If the exit code is not 0 (indicating success), raise an error
-        if code != 0:
-            logging.warning(f"Return code of {process} is not 0")
-            logging.warning("It's also possible because the process may have used STDERR")
-        
-
-    def check_stderr(line, command):
-        """Check errors in command output"""
-
-        errors_list = [
-            "tar error",
-            "tar: error",
-            "tar: cannot open",
-            "tar: cannot stat",
-            "rsync: error",
-            "rsync: connection unexpectedly closed",
-            "rsync: failed",
-            "rsync: recv_generator: mkdir failed",
-            "pg_dump: error: connection",
-            "pg_dump: fatal",
-            "pg_dump: unrecognized option",
-            "pg_dump: error: aborting because of server version mismatch",
-            "mysqldump: Got error: 1044",
-            "mysqldump: Got error: 1045",
-            "mysqldump: Got error: 2013",
-            "mysqldump: unknown option",
-        ]
-
-        for error in errors_list:
-            if error.lower() in line.rstrip().lower():
-                logging.error(f"Error during exec command: {command}")
-                # raise ChildProcessError(f"Error in command: {command}")
-                exit(1)
+    return env_value  # Return the original value if no match
 
 
-    def check_backup_size(backup_file, command):
-        """Check size of result file"""
+def check_utility(utility_name):
+    """Check if a required utility is installed"""
 
-        backup_file_size = os.path.getsize(backup_file)
-
-        # If the file size is 0 bytes, delete it and raise an error
-        if backup_file_size == 0:
-            logging.error(command, exc_info=True)
-            os.remove(backup_file)
-            raise ValueError(f"File {backup_file} is empty (0 byte) and removed")
-        
-        if backup_file_size < 1024:
-            logging.warning(command)
-            logging.warning(f"Size of {backup_file} is less than 1 KB")
-
-        # Determining the appropriate unit of measurement
-        for unit in ["B", "KiB", "MiB", "GiB", "TiB"]:
-            if backup_file_size < 1024:
-                return f"{backup_file_size:.2f} {unit}"
-            backup_file_size /= 1024  # Convert to the next unit
+    if shutil.which(utility_name) is None:
+        logging.error(
+            "%s is not installed or not found in PATH", utility_name, exc_info=True
+        )
+        sys.exit(1)
 
 
-    def remove_old_backup(output_dir, remove_old, keep, keep_weekly, keep_monthly):
-        """Remove old backups based on age and retention policies"""
+def check_disk_space(output_dir):
+    """Check available disk space in the output directory"""
 
-        # Define valid file extensions for backup files
-        valid_extensions = (
-            ".tar",
-            ".sql",
-            ".gz",
-            ".bz",
-            ".xz",
-            ".tar.gpg",
-            ".sql.gpg",
-            ".gz.gpg",
-            ".bz.gpg",
-            ".xz.gpg",
+    logging.info("Checking available disk space...")
+
+    # Get the percentage of used disk space
+    disk_usage = psutil.disk_usage(output_dir)
+    disk_usage_percent = disk_usage.percent
+    free_space = disk_usage.free
+
+    for unit in ["B", "KiB", "MiB", "GiB", "TiB"]:
+        if free_space < 1024:
+            free_space_unit = f"{free_space:.2f} {unit}"
+            break
+        free_space /= 1024  # Convert to the next unit
+
+    # If disk usage exceeds 95%, exit with a warning
+    if disk_usage_percent > 95.0:
+        logging.warning(
+            "More than 90%% of disk space is used: %s%%. Terminating...",
+            disk_usage_percent,
+        )
+        sys.exit(1)
+    else:
+        logging.info("Disk usage: %s%%", disk_usage_percent)
+        logging.info("Free space: %s", free_space_unit)
+
+
+def check_exit_code(code, process):
+    """Check return code of process result"""
+
+    # If the exit code is not 0 (indicating success), print warning
+    if code != 0:
+        logging.warning("Return code of %s is not 0", process)
+        logging.warning(
+            "It's also possible because the process may have used STDERR as STDOUT"
         )
 
-        logging.info(f"Backups older than {remove_old} days will be deleted")
 
-        if keep:
-            logging.info("Keeping backups with 'keep' in name")
-        if keep_weekly:
-            logging.info(f"Keeping {keep_weekly} weekly backups")
-        if keep_monthly:
-            logging.info(f"Keeping {keep_monthly} monthly backups")
+def check_stderr(line, command):
+    """Check errors in command output"""
 
-        # Get current time in unix format
-        now = time.time()
+    errors_list = [
+        "tar error",
+        "tar: error",
+        "tar: cannot open",
+        "tar: cannot stat",
+        "tar: exiting with failure status due to previous errors",
+        "rsync: error",
+        "rsync: connection unexpectedly closed",
+        "rsync: failed",
+        "rsync: recv_generator: mkdir failed",
+        "rsync error: syntax or usage error",
+        "pg_dump: error: connection",
+        "pg_dump: fatal",
+        "pg_dump: unrecognized option",
+        "pg_dump: error: aborting because of server version mismatch",
+        "pg_dump: error: too many command-line arguments",
+        "mysqldump: Got error: 1044",
+        "mysqldump: Got error: 1045",
+        "mysqldump: Got error: 2013",
+        "mysqldump: unknown option",
+        "mysqldump: Couldn't find table",
+        "error: could not insert 'dm_snapshot': operation not permitted",
+        "failure to communicate with kernel device-mapper driver.",
+        "sudo: a password is required",
+        "dd: unrecognized operand",
+        "dd: failed to open",
+    ]
 
-        # Lists to store weekly and monthly backups
-        weekly_files = []
-        monthly_files = []
+    for error in errors_list:
+        if error.lower() in line.rstrip().lower():
+            logging.error("Error during exec command: %s", command)
+            # raise ChildProcessError(f"Error in command: {command}")
+            sys.exit(1)
 
-        logging.info(f"Searching for files with extensions: {valid_extensions}...")
 
-        # Loop through files in the output directory
-        for file_name in os.listdir(output_dir):
-            file_path = os.path.join(output_dir, file_name)
+def check_backup_size(backup_file, command):
+    """Check size of result file"""
 
-            # Check if the file has a valid backup extension
-            if os.path.isfile(file_path) and file_name.endswith(valid_extensions):
-                # Skip files marked with 'keep'
-                if keep and "keep" in file_name:
-                    continue
-                
-                # Collect weekly and monthly backups
-                if keep_weekly and "weekly" in file_name:
-                    weekly_files.append((file_name, os.path.getmtime(file_path)))
-                elif keep_monthly and "monthly" in file_name:
-                    monthly_files.append((file_name, os.path.getmtime(file_path)))
-                else:
-                    # Delete files older than the specified retention period
-                    file_last_modified = os.path.getmtime(file_path)
-                    
-                    if (now - file_last_modified) > (remove_old * 86400): # one day
-                        logging.info(f"Deleting file: {file_path}")
-                        
-                        try:
-                            os.remove(file_path)
-                        except OSError as e:
-                            logging.error(f"Failed to remove file: {file_path}")
-                            logging.error(f"Error details: {e}", exc_info=True)
-                            pass
+    backup_file_size = os.path.getsize(backup_file)
 
-        def clean_old_copies(files_list, copies_to_keep, file_type):
-            """Deletes old backups if their count exceeds
-            the specified limit, keeping the most recent ones."""
+    # If the file size is 0 bytes, delete it and raise an error
+    if backup_file_size == 0:
+        logging.error(command, exc_info=True)
+        os.remove(backup_file)
+        raise ValueError(f"File {backup_file} is empty (0 byte) and removed")
 
-            # Sort files by modification time (most recent first)
-            files_list.sort(key=lambda x: x[1], reverse=True)
+    if backup_file_size < 1024:
+        logging.warning(command)
+        logging.warning("Size of %s is less than 1 KB", backup_file)
 
-            # If the number of files exceeds the limit, remove the oldest ones
-            if len(files_list) > copies_to_keep:
-                for file_info in files_list[copies_to_keep:]:
-                    file_path = os.path.join(output_dir, file_info[0])
-                    logging.info(f"Deleting old {file_type} file: {file_path}")
-                    
+    # Determining the appropriate unit of measurement
+    for unit in ["B", "KiB", "MiB", "GiB", "TiB"]:
+        if backup_file_size < 1024:
+            return f"{backup_file_size:.2f} {unit}"
+        backup_file_size /= 1024  # Convert to the next unit
+
+
+def remove_old_backup(output_dir, remove_old, keep, keep_weekly, keep_monthly):
+    """Remove old backups based on age and retention policies"""
+
+    if remove_old and BACKUP_TOOL != "rsync":
+        pass
+    else:
+        return 0
+
+    # Define valid file extensions for backup files
+    valid_extensions = (
+        ".tar",
+        ".sql",
+        ".gz",
+        ".bz",
+        ".xz",
+        ".zst"
+        ".tar.gpg",
+        ".sql.gpg",
+        ".gz.gpg",
+        ".bz.gpg",
+        ".xz.gpg",
+        ".zst.gpg",
+    )
+
+    logging.info("Backups older than %s days will be deleted", remove_old)
+
+    if keep:
+        logging.info("Keeping backups with 'keep' in name")
+    if keep_weekly:
+        logging.info("Keeping %s weekly backups", keep_weekly)
+    if keep_monthly:
+        logging.info("Keeping %s monthly backups", keep_monthly)
+
+    # Get current time in unix format
+    now = time.time()
+
+    # Lists to store weekly and monthly backups
+    weekly_files = []
+    monthly_files = []
+
+    logging.info("Searching for files with extensions: %s...", valid_extensions)
+
+    # Loop through files in the output directory
+    for file_name in os.listdir(output_dir):
+        file_path = os.path.join(output_dir, file_name)
+        file_hash = f"{file_path}.sha256"
+
+        # Check if the file has a valid backup extension
+        if os.path.isfile(file_path) and file_name.endswith(valid_extensions):
+            # Skip files marked with 'keep'
+            if keep and "keep" in file_name:
+                continue
+
+            # Collect weekly and monthly backups
+            if keep_weekly and "weekly" in file_name:
+                weekly_files.append((file_name, os.path.getmtime(file_path)))
+            elif keep_monthly and "monthly" in file_name:
+                monthly_files.append((file_name, os.path.getmtime(file_path)))
+            else:
+                # Delete files older than the specified retention period
+                file_last_modified = os.path.getmtime(file_path)
+
+                if (now - file_last_modified) > (remove_old * 86400):  # one day
+                    logging.info("Deleting file: %s", file_path)
+
                     try:
-                        # Attempt to remove the file
-                        os.remove(file_path)
-                    except OSError as e:
-                        # Log an error if file removal fails
-                        logging.error(f"Failed to remove file: {file_path}")
-                        logging.error(f"Error details: {e}", exc_info=True)
+                        # Attempt to remove the hash file
+                        os.remove(file_hash)
+                    except FileNotFoundError:
                         pass
 
-        # Remove old weekly backups if configured
-        if keep_weekly:
-            clean_old_copies(weekly_files, keep_weekly, "weekly")
-        # Remove old monthly backups if configured
-        if keep_monthly:
-            clean_old_copies(monthly_files, keep_monthly, "monthly")
+                    try:
+                        os.remove(file_path)
+                    except OSError as error_msg:
+                        logging.error("Failed to remove file: %s", file_path)
+                        logging.error("Error details: %s", error_msg, exc_info=True)
 
+    def clean_old_copies(files_list, copies_to_keep, file_type):
+        """Deletes old backups if their count exceeds
+        the specified limit, keeping the most recent ones."""
 
-    def create_lock_file():
-        """Check if previous backup process is running
-        and create lock-file to protect against restart"""
+        # Sort files by modification time (most recent first)
+        files_list.sort(key=lambda x: x[1], reverse=True)
 
-        logging.info("Checking if a previous backup process is running...")
+        # If the number of files exceeds the limit, remove the oldest ones
+        if len(files_list) > copies_to_keep:
+            for file_info in files_list[copies_to_keep:]:
+                file_path = os.path.join(output_dir, file_info[0])
+                logging.info("Deleting old %s file: %s", file_type, file_path)
 
-        # Define the lock file name
-        lock_file  = os.path.join(SCRIPT_DIR, backup_id + ".lock")
-
-        # Check if the lock file already exists
-        if os.path.exists(lock_file ):
-            while True:
-                # Open the lock file and read the stored PID
-                if os.path.exists(lock_file ):
-                    with open(lock_file , "r") as f:
-                        try:
-                            # Try to parse the PID from the file
-                            pid = int(f.read().strip())
-                            
-                            if psutil.pid_exists(pid):
-                                # If the process with the PID is still running, wait for it to finish
-                                logging.warning(
-                                    f"Backup process is already running (PID: {pid}). Waiting for it to complete..."
-                                )
-                                time.sleep(5) # Wait for 5 seconds before checking again
-                            else:
-                                # If the process is no longer active, continue with the current backup
-                                logging.info(
-                                    f"Inactive process found in lock file (PID: {pid}). Continuing..."
-                                )
-                                break
-                        except ValueError:
-                            # If the PID in the lock file is invalid, log a warning and continue
-                            logging.warning("Invalid PID in lock file. Continuing...")
-                            break
-                else:
-                    break
-
-        # Create or overwrite the lock file with the current process's PID
-        with open(lock_file , "w") as f:
-            f.write(str(os.getpid()))
-            logging.info(f"Lock file created: {lock_file }")
-        
-        return lock_file 
-
-
-    def remove_lock_file(lock_file ):
-        """Remove the lock file to allow future backup processes to run"""
-
-        # Check if the lock file exists
-        if os.path.exists(lock_file ):
-            try:
-                os.remove(lock_file )
-                logging.info(f"Lock file {lock_file } has been removed")
-            except OSError as e:
-                logging.error(f"Error while removing lock file: {e}", exc_info=True)
-
-
-    def compress_backup(
-        command, env, backup_file, compress_format, compress_level, encrypt_password):
-        """Compression (and possibly encryption) of the backup file"""
-
-        # Set default compression format to 'gzip' if not specified
-        if not compress_format:
-            compress_format = "gzip"
-        
-        # Set default compression level to '1' if not specified
-        if not compress_level:
-            compress_level = "1"
-
-        # Check if the compression utility (gzip, bzip2, xz) is available
-        check_utility(compress_format)
-
-        logging.info("The backup file will be compressed")
-        logging.info(
-            f"Using compression format: {compress_format} with compression level: {compress_level}"
-        )
-
-        # Add appropriate file extension based on compression format
-        if compress_format in ["gzip", "pigz"]:
-            backup_file += ".gz"
-        elif compress_format == "xz":
-            backup_file += ".xz"
-        elif compress_format == "bzip2":
-            backup_file += ".bz"
-
-        try:
-            if encrypt_password:
-                # Check if 'gpg' utility is available for encryption
-                check_utility("gpg")
-                logging.info("The backup file will be encrypted via GPG")
-                
-                # Update file extension to reflect encryption
-                backup_file += ".gpg"
-                
-                # Create a temporary directory for GPG encryption
-                gpg_tmp_dir = os.path.join(SCRIPT_DIR, f".{backup_id}_gnupg")
-                os.mkdir(gpg_tmp_dir, mode=0o700)
-                
-                # Path for the gpg password file
-                gpg_pass_file = gpg_tmp_dir + "/passfile"
-                
-                # Write the password to a temporary file
-                with open(gpg_pass_file, "w") as pass_file:
-                    pass_file.write(encrypt_password)
-                
-                # Prepare GPG encryption command
-                encrypt_command = [
-                    "gpg",
-                    "--quiet",
-                    "--homedir",
-                    gpg_tmp_dir,
-                    "--batch",
-                    "--yes",
-                    "--symmetric",
-                    "--passphrase-file",
-                    gpg_pass_file,
-                    # "--passphrase",
-                    # encrypt_password,
-                ]
-                
                 try:
-                    with open(backup_file, "wb") as f_out:
-                        with subprocess.Popen(
-                            command,
-                            env=env,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE
-                        ) as dump_process:
-                            # Compress the backup data using the specified format and level
-                            with subprocess.Popen(
-                                [f"{compress_format}", f"-{compress_level}"],
-                                stdin=dump_process.stdout,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE
-                            ) as zip_process:
-                                # Encrypt the compressed data using GPG
-                                with subprocess.Popen(
-                                    encrypt_command,
-                                    stdin=zip_process.stdout,
-                                    stdout=f_out,
-                                    stderr=subprocess.PIPE
-                                ) as encrypt_process:
-                        
-                                    # Close the stdout of the dump process to allow it to finish
-                                    dump_process.stdout.close()
-                                    
-                                    # Capture dump processes output
-                                    for line in dump_process.stderr:
-                                        logging.info(f"[{backup_tool.upper()}] | {line.rstrip().decode()}")
-                                        check_stderr(line.decode(), command)
+                    # Attempt to remove the hash file
+                    os.remove(file_hash)
+                except FileNotFoundError:
+                    pass
 
-                                    # Wait for the process to complete
-                                    dump_process.communicate()
+                try:
+                    # Attempt to remove the backup file
+                    os.remove(file_path)
+                except OSError as error_msg:
+                    # Log an error if file removal fails
+                    logging.error("Failed to remove file: %s", file_path)
+                    logging.error("Error details: %s", error_msg, exc_info=True)
 
-                                    check_exit_code(dump_process.returncode, f"{backup_tool} process")
-                                    
-                                    # Close the stdout of the zip process to allow it to finish
-                                    zip_process.stdout.close()
-                                    
-                                    # Capture zip processes output
-                                    for line in zip_process.stderr:
-                                        logging.info(f"[{backup_tool.upper()}] | {line.rstrip().decode()}")
-                                        check_stderr(line.decode(), command)
-                                    
-                                    # Capture encrypt processes output
-                                    for line in encrypt_process.stderr:
-                                        logging.info(f"[{backup_tool.upper()}] | {line.rstrip().decode()}")
-                                        check_stderr(line.decode(), command)
-                                    
-                                    # Wait for the zip process
-                                    zip_process.communicate()
-                                    # if zip_errors:
-                                    #     logging.warning(f"ZIP STDERR:\n\n{zip_errors}")
-                                    check_exit_code(zip_process.returncode, "zip process")
-                                    
-                                    # Wait for the encrypt process
-                                    encrypt_process.communicate()
-                                    # if encrypt_errors:
-                                    #     logging.warning(f"ENCRYPT STDERR:\n\n{encrypt_errors}")
-                                    check_exit_code(encrypt_process.returncode, "gpg process")
-                finally:
-                    # Clean up the temporary GPG directory
-                    logging.info("Cleaning temporary GPG files...")
-                    shutil.rmtree(gpg_tmp_dir, ignore_errors=True)
+    # Remove old weekly backups if configured
+    if keep_weekly:
+        clean_old_copies(weekly_files, keep_weekly, "weekly")
+    # Remove old monthly backups if configured
+    if keep_monthly:
+        clean_old_copies(monthly_files, keep_monthly, "monthly")
 
+
+def create_lock_file(backup_id):
+    """Check if previous backup process is running
+    and create lock-file to protect against restart"""
+
+    logging.info("Checking if a previous backup process is running...")
+
+    # Define the lock file name
+    lock_file = os.path.join(SCRIPT_DIR, backup_id + ".lock")
+
+    # Check if the lock file already exists
+    if os.path.exists(lock_file):
+        while True:
+            # Open the lock file and read the stored PID
+            if os.path.exists(lock_file):
+                with open(lock_file, "r", encoding="utf-8") as f_lock:
+                    try:
+                        # Try to parse the PID from the file
+                        pid = int(f_lock.read().strip())
+
+                        if psutil.pid_exists(pid):
+                            # If the process with the PID is still running, wait for it to finish
+                            logging.warning(
+                                "Backup process is already running (PID: %s). Waiting for it to complete...",
+                                pid,
+                            )
+                            time.sleep(5)  # Wait for 5 seconds before checking again
+                        else:
+                            # If the process is no longer active, continue with the current backup
+                            logging.info(
+                                "Inactive process found in lock file (PID: %s). Continuing...",
+                                pid,
+                            )
+                            break
+                    except ValueError:
+                        # If the PID in the lock file is invalid, log a warning and continue
+                        logging.warning("Invalid PID in lock file. Continuing...")
+                        break
             else:
-                # No encryption; just compress and write the backup data
+                break
+
+    # Create or overwrite the lock file with the current process's PID
+    with open(lock_file, "w", encoding="utf-8") as f_lock:
+        f_lock.write(str(os.getpid()))
+        logging.info("Lock file created: %s", lock_file)
+
+    return lock_file
+
+
+def remove_lock_file(lock_file):
+    """Remove the lock file to allow future backup processes to run"""
+
+    # Check if the lock file exists
+    if os.path.exists(lock_file):
+        try:
+            os.remove(lock_file)
+            logging.info("Lock file %s has been removed", lock_file)
+        except OSError as error_msg:
+            logging.error(
+                "Error while removing lock file: %s", error_msg, exc_info=True
+            )
+
+
+def calculate_sha256(file_path: str):
+    """Calculates the SHA-256 hash of a file and saves it to a .sha256 file"""
+    try:
+        with open(file_path, 'rb') as f_backup:
+            hash_hex = hashlib.sha256(f_backup.read()).hexdigest()
+
+        with open(f"{file_path}.sha256", 'w', encoding="utf-8") as f_hash:
+            f_hash.write(f"{hash_hex} {file_path}")
+
+    except FileNotFoundError as error_msg:
+        logging.error("Error hash calculating for %s: %s", file_path, error_msg, exc_info=True)
+    except Exception as error_msg:
+        logging.error("Error: %s", error_msg, exc_info=True)
+
+    return hash_hex
+
+
+def compress_backup(
+    backup_id, command, env, backup_file, compress_format, compress_level, encrypt_password
+):
+    """Compression (and possibly encryption) of the backup file"""
+
+    # Set default compression format to 'gzip' if not specified
+    if not compress_format:
+        compress_format = "gzip"
+
+    # Set default compression level to '1' if not specified
+    if not compress_level:
+        compress_level = "1"
+
+    # Check if the compression utility (gzip, bzip2, xz) is available
+    check_utility(compress_format)
+
+    logging.info("The backup file will be compressed")
+    logging.info(
+        "Using compression format: %s with compression level: %s",
+        compress_format,
+        compress_level,
+    )
+
+    # Add appropriate file extension based on compression format
+    if compress_format in ["gzip", "pigz"]:
+        backup_file += ".gz"
+    elif compress_format in ["bzip2", "pbzip2"]:
+        backup_file += ".bz"
+    elif compress_format == "xz":
+        backup_file += ".xz"
+    elif compress_format == "zstd":
+        backup_file += ".zst"
+
+    try:
+        if encrypt_password:
+            # Check if 'gpg' utility is available for encryption
+            check_utility("gpg")
+            # check_utility("gpg-agent")
+            logging.info("The backup file will be encrypted via GPG")
+
+            # Update file extension to reflect encryption
+            backup_file += ".gpg"
+
+            # Create a temporary directory for GPG encryption
+            # gpg_tmp_dir = os.path.join(SCRIPT_DIR, f".{backup_id}_gnupg")
+            gpg_tmp_dir = f"/dev/shm/.{backup_id}"
+            os.mkdir(gpg_tmp_dir, mode=0o700)
+
+            # Path for the gpg password file
+            gpg_pass_file = gpg_tmp_dir + "/passfile"
+
+            # Write the password to a temporary file
+            with open(gpg_pass_file, "w", encoding="utf-8") as f_pass:
+                f_pass.write(encrypt_password)
+
+            # Prepare GPG encryption command
+            encrypt_command = [
+                "gpg",
+                "--quiet",
+                "--batch",
+                "--yes",
+                "--symmetric",
+                "--cipher-algo", "AES256",
+                "--homedir", gpg_tmp_dir,
+                "--passphrase-file", gpg_pass_file,
+            ]
+
+            try:
                 with open(backup_file, "wb") as f_out:
-                    # Run the dump process to collect backup data
                     with subprocess.Popen(
-                        command,
-                        env=env,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE
+                        command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE
                     ) as dump_process:
-                        # Compress the backup data and write to the backup file
+                        # Compress the backup data using the specified format and level
                         with subprocess.Popen(
-                                [f"{compress_format}", f"-{compress_level}"],
-                                stdin=dump_process.stdout,
+                            [f"{compress_format}", f"-{compress_level}"],
+                            stdin=dump_process.stdout,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                        ) as zip_process:
+                            # Encrypt the compressed data using GPG
+                            with subprocess.Popen(
+                                encrypt_command,
+                                stdin=zip_process.stdout,
                                 stdout=f_out,
-                                stderr=subprocess.PIPE
-                            ) as zip_process:
-                                
+                                stderr=subprocess.PIPE,
+                            ) as encrypt_process:
+
                                 # Close the stdout of the dump process to allow it to finish
                                 dump_process.stdout.close()
-                                
-                                # Capture processes output
+
+                                # Capture dump processes output
                                 for line in dump_process.stderr:
-                                    logging.info(f"[{backup_tool.upper()}] | {line.rstrip().decode()}")
+                                    logging.info(
+                                        "[%s] | %s",
+                                        BACKUP_TOOL.upper(),
+                                        line.rstrip().decode(),
+                                    )
                                     check_stderr(line.decode(), command)
 
-                                for line in zip_process.stderr:
-                                    logging.info(f"[{backup_tool.upper()}] | {line.rstrip().decode()}")
-                                    check_stderr(line.decode(), command)
-                        
                                 # Wait for the process to complete
                                 dump_process.communicate()
 
-                                check_exit_code(dump_process.returncode, f"{backup_tool} process")
-                    
+                                check_exit_code(
+                                    dump_process.returncode,
+                                    f"{BACKUP_TOOL} process",
+                                )
+
+                                # Close the stdout of the zip process to allow it to finish
+                                zip_process.stdout.close()
+
+                                # Capture zip processes output
+                                for line in zip_process.stderr:
+                                    logging.info(
+                                        "[%s] | %s",
+                                        BACKUP_TOOL.upper(),
+                                        line.rstrip().decode(),
+                                    )
+                                    check_stderr(line.decode(), command)
+
+                                # Capture encrypt processes output
+                                for line in encrypt_process.stderr:
+                                    logging.info(
+                                        "[%s] | %s",
+                                        BACKUP_TOOL.upper(),
+                                        line.rstrip().decode(),
+                                    )
+                                    check_stderr(line.decode(), command)
+
                                 # Wait for the zip process
                                 zip_process.communicate()
                                 check_exit_code(zip_process.returncode, "zip process")
-        except Exception as e:
-            # Log any errors encountered during the compression process and exit
-            logging.error(f"Error during backup compression: {str(e)}", exc_info=True)
-            exit(1)
-        
-        # Return the final backup file path (compressed and possibly encrypted)
-        return backup_file
 
+                                # Wait for the encrypt process
+                                encrypt_process.communicate()
+                                check_exit_code(
+                                    encrypt_process.returncode, "gpg process"
+                                )
+            finally:
+                # Clean up the temporary GPG directory
+                logging.info("Cleaning temporary GPG files...")
+                shutil.rmtree(gpg_tmp_dir, ignore_errors=True)
 
-    def encrypt_backup(command, env, backup_file, encrypt_password):
-        """Encryption of the backup file"""
-
-        # Check if the 'gpg' utility is available for encryption
-        check_utility("gpg")
-
-        logging.info("The backup file will be encrypted via GPG")
-
-        # Update backup file name to reflect GPG encryption
-        backup_file += ".gpg"
-
-        # Create a temporary directory for GPG encryption configuration
-        gpg_tmp_dir = os.path.join(SCRIPT_DIR, f".{backup_id}_gnupg")
-        os.mkdir(gpg_tmp_dir, mode=0o700)
-
-        # Path for the gpg password file
-        gpg_pass_file = gpg_tmp_dir + "/passfile"
-        
-        # Write the password to a temporary file
-        with open(gpg_pass_file, "w") as pass_file:
-            pass_file.write(encrypt_password)
-
-        # Prepare GPG encryption command
-        encrypt_command = [
-            "gpg",
-            "--quiet",
-            "--homedir",
-            gpg_tmp_dir,
-            "--batch",
-            "--yes",
-            "--symmetric",
-            "--passphrase-file",
-            gpg_pass_file,
-            # "--passphrase",
-            # encrypt_password,
-        ]
-
-        try:
-            # Open the backup file to write encrypted data
+        else:
+            # No encryption; just compress and write the backup data
             with open(backup_file, "wb") as f_out:
-                # Start the dump process to get the backup data
+                # Run the dump process to collect backup data
                 with subprocess.Popen(
-                    command,
-                    env=env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
+                    command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE
                 ) as dump_process:
-                    # Start the encryption process, piping the dump output to GPG
+                    # Compress the backup data and write to the backup file
                     with subprocess.Popen(
-                        encrypt_command,
+                        [f"{compress_format}", f"-{compress_level}"],
                         stdin=dump_process.stdout,
                         stdout=f_out,
-                        stderr=subprocess.PIPE
-                    ) as encrypt_process:
+                        stderr=subprocess.PIPE,
+                    ) as zip_process:
+
                         # Close the stdout of the dump process to allow it to finish
                         dump_process.stdout.close()
-                        
+
                         # Capture processes output
                         for line in dump_process.stderr:
-                            logging.info(f"[{backup_tool.upper()}] | {line.rstrip().decode()}")
+                            logging.info(
+                                "[%s] | %s",
+                                BACKUP_TOOL.upper(),
+                                line.rstrip().decode(),
+                            )
                             check_stderr(line.decode(), command)
-                        
-                        for line in encrypt_process.stderr:
-                            logging.info(f"[{backup_tool.upper()}] | {line.rstrip().decode()}")
+
+                        for line in zip_process.stderr:
+                            logging.info(
+                                "[%s] | %s",
+                                BACKUP_TOOL.upper(),
+                                line.rstrip().decode(),
+                            )
                             check_stderr(line.decode(), command)
 
                         # Wait for the process to complete
                         dump_process.communicate()
-                        check_exit_code(dump_process.returncode, f"{backup_tool} process")
-                        
-                        # Wait for the encrypt process
-                        encrypt_process.communicate()
-                        check_exit_code(encrypt_process.returncode, "gpg process")
-        except Exception as e:
-            # Log any errors that occur during the encryption process and exit
-            logging.error(f"Error during backup encryption: {str(e)}", exc_info=True)
-            exit(1)
-        
-        finally:
-            # Clean up the temporary GPG directory
-            logging.info("Cleaning temporary GPG files...")
-            shutil.rmtree(gpg_tmp_dir, ignore_errors=True)
 
-        # Return the final encrypted backup file path
-        return backup_file
+                        check_exit_code(
+                            dump_process.returncode, f"{BACKUP_TOOL} process"
+                        )
 
-    def zabbix_sender(zbx_config, zbx_key, zbx_value, zbx_extra_params):
-        """Send backup completion data to Zabbix"""
+                        # Wait for the zip process
+                        zip_process.communicate()
+                        check_exit_code(zip_process.returncode, "zip process")
+    except Exception as error_msg:
+        # Log any errors encountered during the compression process and exit
+        logging.error(
+            "Error during backup compression: %s", str(error_msg), exc_info=True
+        )
+        sys.exit(1)
 
-        # Check if the 'zabbix_sender' utility is available
-        check_utility("zabbix_sender")
+    # Return the final backup file path (compressed and possibly encrypted)
+    return backup_file
 
-        # Prepare the command to send data to Zabbix
-        command = [
-            "zabbix_sender",
-            "--config",
-            zbx_config,
-            "--key",
-            zbx_key,
-            "--value",
-            zbx_value,
-        ]
 
-        # If extra parameters are provided, split and add them to the command
-        if zbx_extra_params:
-            command.extend(zbx_extra_params.split())
+def encrypt_backup(backup_id, command, env, backup_file, encrypt_password):
+    """Encryption of the backup file"""
 
-        logging.info(f"Sending backup status to Zabbix (1 = success, 0 = failure)")
-        logging.info(f"Zabbix key: {zbx_key}")
-        logging.info(f"Zabbix value: {zbx_value}")
+    # Check if the 'gpg' utility is available for encryption
+    check_utility("gpg")
 
-        try:
-            # Execute the command and raise an error if it fails
-            # If the command is executed but data is not sent, then repeat 3 times
-            for _ in range(3):
-                fail = False
+    logging.info("The backup file will be encrypted via GPG")
 
+    # Update backup file name to reflect GPG encryption
+    backup_file += ".gpg"
+
+    # Create a temporary directory for GPG encryption configuration
+    # gpg_tmp_dir = os.path.join(SCRIPT_DIR, f".{backup_id}_gnupg")
+    gpg_tmp_dir = f"/dev/shm/.{backup_id}"
+    os.mkdir(gpg_tmp_dir, mode=0o700)
+
+    # Path for the gpg password file
+    gpg_pass_file = gpg_tmp_dir + "/passfile"
+
+    # Write the password to a temporary file
+    with open(gpg_pass_file, "w", encoding="utf-8") as f_pass:
+        f_pass.write(encrypt_password)
+
+    # Prepare GPG encryption command
+    encrypt_command = [
+        "gpg",
+        "--quiet",
+        "--batch",
+        "--yes",
+        "--symmetric",
+        "--cipher-algo", "AES256",
+        "--homedir", gpg_tmp_dir,
+        "--passphrase-file", gpg_pass_file,
+        # "--passphrase",
+        # encrypt_password,
+    ]
+
+    try:
+        # Open the backup file to write encrypted data
+        with open(backup_file, "wb") as f_out:
+            # Start the dump process to get the backup data
+            with subprocess.Popen(
+                command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            ) as dump_process:
+                # Start the encryption process, piping the dump output to GPG
                 with subprocess.Popen(
-                    command,
-                    stdout=subprocess.PIPE,
+                    encrypt_command,
+                    stdin=dump_process.stdout,
+                    stdout=f_out,
                     stderr=subprocess.PIPE,
-                    universal_newlines=True,
-                ) as zbx_process:
-                    for line in zbx_process.stdout:
-                        logging.info(f"[ZABBIX] | {line.rstrip()}")
-                        check_stderr(line, command)
-                        if "processed: 0" in line:
-                            fail = True
-                        
-                    for line in zbx_process.stderr:
-                        logging.info(f"[ZABBIX] | {line.rstrip()}")
-                        check_stderr(line, command)
-                        if "processed: 0" in line:
-                            fail = True
+                ) as encrypt_process:
+                    # Close the stdout of the dump process to allow it to finish
+                    dump_process.stdout.close()
+
+                    # Capture processes output
+                    for line in dump_process.stderr:
+                        logging.info(
+                            "[%s] | %s",
+                            BACKUP_TOOL.upper(),
+                            line.rstrip().decode(),
+                        )
+                        check_stderr(line.decode(), command)
+
+                    for line in encrypt_process.stderr:
+                        logging.info(
+                            "[%s] | %s",
+                            BACKUP_TOOL.upper(),
+                            line.rstrip().decode(),
+                        )
+                        check_stderr(line.decode(), command)
 
                     # Wait for the process to complete
-                    zbx_process.communicate()
-                    
-                    if not fail:
-                        break
-                    else:
-                        logging.warning(
-                            f"Unable to send data to Zabbix server with config: {zbx_config} and key: {zbx_key}, retrying..."
-                        )
-                        time.sleep(2)
-                        continue
-
-        except subprocess.CalledProcessError as e:
-            # Log any errors that occur during the data sending process
-            logging.error(f"Error sending data to Zabbix: {str(e)}", exc_info=True)
-
-
-    ####################
-    ### BACKUP FILES ###
-    ####################
-
-    def main_file():
-        """Main function of the file backup"""
-
-        ## Tar
-        def backup_tar(
-            source_dir,
-            source_file,
-            output_dir,
-            extra_params,
-            compress,
-            compress_format,
-            compress_level,
-            encrypt_password,
-            filename,
-            ssh_host,
-            ssh_port,
-            ssh_user,
-            ssh_key,
-            ssh_extra_params,
-            label_keep,
-            label_weekly,
-            label_monthly,
-        ):
-            """Backup files with tar"""
-
-            # Check if the 'tar' utility is available
-            check_utility("tar")
-
-            # Determine the backup file name based on provided filename or default naming
-            if not filename:
-                dir_path = os.path.abspath(source_dir)
-                dir_name = os.path.basename(dir_path)
-                
-                if label_keep:
-                    backup_file = os.path.join(output_dir, f"{dir_name}_backup_keep_{TIMESTAMP}.tar")
-                elif label_weekly:
-                    backup_file = os.path.join(output_dir, f"{dir_name}_backup_weekly_{TIMESTAMP}.tar")
-                elif label_monthly:
-                    backup_file = os.path.join(output_dir, f"{dir_name}_backup_monthly_{TIMESTAMP}.tar")
-                else:
-                    backup_file = os.path.join(output_dir, f"{dir_name}_backup_{TIMESTAMP}.tar")
-            else:
-                backup_file = os.path.join(output_dir, f"{filename}.tar")
-
-            # Prepare the command to create a tar archive
-            command = [
-                "tar",
-                # "--warning=no-file-changed",
-                # "--ignore-failed-read",
-                "--create",
-                f"--file={backup_file}",
-                f"--directory={source_dir}",
-                "./", # Include all files in the source directory
-            ]
-
-            # If specific files are provided, adjust the command accordingly
-            if source_file:
-                del command[4] # Remove the placeholder for "./"
-                command.extend(source_file.split())
-
-            # Adjust command if compression, SSH, or encryption is required
-            if compress or ssh_host or encrypt_password:
-                command[2] = "--file=-"
-
-            if extra_params:
-                # Split parameters and find the position to insert
-                params_to_add = extra_params.split()
-                position = command.index("--create") + 1
-                
-                for param in params_to_add:
-                    command.insert(position, param)
-                    position += 1  # Shift position after each inserted parameter
-
-            # If using SSH, prepare the SSH command
-            if ssh_host:
-                check_utility("ssh")
-                
-                ssh_prefix = [
-                    "ssh",
-                    "-q",
-                    *(ssh_extra_params.split() if ssh_extra_params else []),
-                    "-o", "StrictHostKeyChecking=no",
-                    "-o", "UserKnownHostsFile=/dev/null",
-                    ssh_host,
-                    "-p", ssh_port,
-                    "-l", ssh_user,
-                    "-i", ssh_key,
-                ]
-                
-                command = ssh_prefix + command # Prepend SSH command to tar command
-
-            # Set any custom environment variable for the backup process
-            env = os.environ.copy()
-            env["B4CKUP_ENV"] = "True"
-
-            logging.info("Starting file backup with tar...")
-
-            try:
-                # Call the compression or encryption function based on user options
-                if compress:
-                    backup_file = compress_backup(
-                        command,
-                        env,
-                        backup_file,
-                        compress_format,
-                        compress_level,
-                        encrypt_password,
+                    dump_process.communicate()
+                    check_exit_code(
+                        dump_process.returncode, f"{BACKUP_TOOL} process"
                     )
-                else:
-                    if encrypt_password:
-                        # Encrypt the backup if a password is provided
-                        backup_file = encrypt_backup(
-                            command, env, backup_file, encrypt_password
-                        )
-                    else:
-                        if ssh_host:
-                            # Handle backup using SSH
-                            with open(backup_file, "wb") as f_out:
-                                with subprocess.Popen(
-                                    command, env=env, stdout=f_out, stderr=subprocess.PIPE
-                                ) as tar_process:
-                                    for line in tar_process.stderr:
-                                        logging.info(f"[{backup_tool.upper()}] | {line.rstrip().decode()}")
-                                        check_stderr(line.decode(), command)
 
-                                    # Wait for the process to complete
-                                    tar_process.communicate()
-                                    
-                                    check_exit_code(tar_process.returncode, f"{backup_tool} process")
-                        else:
-                            # Run the tar command directly without SSH
-                            with subprocess.Popen(
-                                command,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE,
-                                universal_newlines=True,
-                                # check=True
-                            ) as tar_process:
-                                for line in tar_process.stdout:
-                                    logging.info(f"[{backup_tool.upper()}] | {line.rstrip()}")
-                                    check_stderr(line, command)
-                                
-                                for line in tar_process.stderr:
-                                    logging.info(f"[{backup_tool.upper()}] | {line.rstrip()}")
-                                    check_stderr(line, command)
+                    # Wait for the encrypt process
+                    encrypt_process.communicate()
+                    check_exit_code(encrypt_process.returncode, "gpg process")
+    except Exception as error_msg:
+        # Log any errors that occur during the encryption process and exit
+        logging.error(
+            "Error during backup encryption: %s", str(error_msg), exc_info=True
+        )
+        sys.exit(1)
 
-                                # Wait for the process to complete
-                                tar_process.communicate()
+    finally:
+        # Clean up the temporary GPG directory
+        logging.info("Cleaning temporary GPG files...")
+        shutil.rmtree(gpg_tmp_dir, ignore_errors=True)
 
-                                check_exit_code(tar_process.returncode, f"{backup_tool} process")
-                            
-                backup_file_size = check_backup_size(backup_file, command)
-
-                logging.info(f"File backup successfully created: {backup_file}")
-                logging.info(f"File size: {backup_file_size}")
-            except Exception as e:
-                logging.error(f"Error during file backup with tar: {str(e)}", exc_info=True)
-                exit(1)
-
-        ## Rsync
-        def backup_rsync(
-            source_dir,
-            source_file,
-            output_dir,
-            extra_params,
-            ssh_host,
-            ssh_port,
-            ssh_user,
-            ssh_key,
-            ssh_extra_params
-        ):
-            """Backup files with rsync"""
-
-            # Check if the 'rsync' utility is available
-            check_utility("rsync")
-
-            # Prepare the rsync command with standard options
-            command = [
-                "rsync",
-                "--archive",
-                "--links",
-                "--hard-links",
-                "--one-file-system",
-                "--xattrs",
-                "--human-readable",
-                source_dir,
-                output_dir,
-            ]
-
-            # If specific files are provided, adjust the command accordingly
-            if source_file:
-                file_list = []
-                source_file_list = source_file.split()
-                
-                for file in source_file_list:
-                    # Construct file paths based on whether using SSH
-                    if ssh_host:
-                        file_iter = f":{source_dir}/{file}"
-                    else:
-                        file_iter = f"{source_dir}/{file}"
-                    
-                    file_list.append(file_iter)
-                
-                command[7:8] = file_list # Replace the source_dir in command
-
-            # Add extra parameters for the backup command if provided
-            if extra_params:
-                command.extend(extra_params.split())
-
-            # If using SSH, prepare the SSH command
-            if ssh_host:
-                check_utility("ssh") # Check for SSH utility
-                
-                if not source_file:
-                    command[7] = f":{source_dir}" # Adjust for SSH source if no specific files
-                
-                if not ssh_extra_params:
-                    ssh_extra_params = ""
-
-                command.extend(
-                    ["-e", f"ssh -q {ssh_extra_params} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {ssh_host} -p {ssh_port} -l {ssh_user} -i {ssh_key}"]
-                )
-
-            # Set any custom environment variable for the backup process
-            env = os.environ.copy()
-            env["B4CKUP_ENV"] = "True"
-
-            logging.info("Starting file backup with rsync...")
-
-            try:
-                # Run the rsync command and check for errors
-                with subprocess.Popen(
-                    command,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    universal_newlines=True,
-                    # check=True
-                ) as rsync_process:
-                    for line in rsync_process.stdout:
-                        logging.info(f"[{backup_tool.upper()}] | {line.rstrip()}")
-                        check_stderr(line, command)
-                    
-                    for line in rsync_process.stderr:
-                        logging.info(f"[{backup_tool.upper()}] | {line.rstrip()}")
-                        check_stderr(line, command)
-
-                    # Wait for the process to complete
-                    rsync_process.communicate()
-                    
-                    check_exit_code(rsync_process.returncode, f"{backup_tool} process")
-        
-                logging.info(f"File backup successfully created at: {output_dir}")
-            except subprocess.CalledProcessError as e:
-                logging.error(f"Error during file backup with rsync: {str(e)}", exc_info=True)
-                exit(1)
-
-        ## Start backup
-        if args.file_tool == "tar":
-            if args.remove_old:
-                # Remove old backups if specified
-                remove_old_backup(
-                    args.output_dir, args.remove_old, args.keep, args.keep_weekly, args.keep_monthly
-                )
-
-        # Check available disk space in the output directory
-        check_disk_space(args.output_dir)
-
-        lock_file  = create_lock_file()# Create a lock file to prevent concurrent backups
-
-        # Handle encryption password input
-        if args.file_tool == "tar":
-            if args.encrypt_password:
-                encrypt_password = args.encrypt_password
-            elif args.encrypt_password_input:
-                encrypt_password = getpass.getpass(prompt="Enter encryption password: ")
-            else:
-                encrypt_password = None
-
-        try:
-            # Execute the appropriate backup function based on user choice
-            if args.file_tool == "tar":
-                backup_tar(
-                    args.source_dir,
-                    args.source_file,
-                    args.output_dir,
-                    args.extra_params,
-                    args.compress,
-                    args.compress_format,
-                    args.compress_level,
-                    encrypt_password,
-                    args.filename,
-                    args.ssh_host,
-                    args.ssh_port,
-                    args.ssh_user,
-                    args.ssh_key,
-                    args.ssh_extra_params,
-                    args.label_keep,
-                    args.label_weekly,
-                    args.label_monthly,
-                )
-            elif args.file_tool == "rsync":
-                backup_rsync(
-                    args.source_dir,
-                    args.source_file,
-                    args.output_dir,
-                    args.extra_params,
-                    args.ssh_host,
-                    args.ssh_port,
-                    args.ssh_user,
-                    args.ssh_key,
-                    args.ssh_extra_params,
-                )
-            
-            # If Zabbix config and key are provided, set the value to success
-            if args.zbx_config and args.zbx_key:
-                global zbx_value
-                zbx_value = "1"
-        finally:
-            remove_lock_file(lock_file ) # Ensure lock file is removed after operation
+    # Return the final encrypted backup file path
+    return backup_file
 
 
-    ########################
-    ### BACKUP DATABASE ####
-    ########################
+def forward_ssh_port(
+    ssh_host,
+    ssh_port,
+    ssh_user,
+    ssh_key,
+    ssh_extra_params,
+    db_host,
+    db_port,
+    local_forward_port,
+):
+    """Open SSH tunnel using a private key"""
 
-    def main_db():
-        """Main function of the database backup"""
+    # Set local forward port for SSH if not provided
+    # if not local_forward_port:
+    #     local_forward_port = db_port
 
-        ## Database
-        def backup_database(
-            db_host,
-            db_port,
-            db_name,
-            db_user,
-            db_password,
-            output_dir,
-            extra_params,
-            compress,
-            compress_format,
-            compress_level,
-            encrypt_password,
-            filename,
-            label_keep,
-            label_weekly,
-            label_monthly,
-        ):
-            """Backup selected database"""
+    check_utility("ssh")
 
-            # Define database type
-            if args.db_tool == "pg_dump":
-                db_type = "PotstgreSQL"
-            elif args.db_tool == "mysqldump":
-                db_type = "MySQL"
+    logging.info("Connecting to database via SSH tunnel...")
 
-            logging.info(f"Starting {db_type} database backup...")
+    ssh_command = [
+        "ssh",
+        "-q",
+        *(ssh_extra_params.split() if ssh_extra_params else []),
+        "-f",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-L",
+        f"{local_forward_port}:{db_host}:{db_port}",
+        ssh_host,
+        "-p",
+        ssh_port,
+        "-l",
+        ssh_user,
+        "-i",
+        ssh_key,
+        "sleep 10",
+    ]
 
-            # Check if the dump utility is available
-            check_utility(args.db_tool)
-
-            # Set the backup file name based on provided filename or default naming
-            if not filename:
-                if label_keep:
-                    backup_file = os.path.join(output_dir, f"{db_name}_backup_keep_{TIMESTAMP}.sql")
-                elif label_weekly:
-                    backup_file = os.path.join(output_dir, f"{db_name}_backup_weekly_{TIMESTAMP}.sql")
-                elif label_monthly:
-                    backup_file = os.path.join(output_dir, f"{db_name}_backup_monthly_{TIMESTAMP}.sql")
-                else:
-                    backup_file = os.path.join(output_dir, f"{db_name}_backup_{TIMESTAMP}.sql")
-            else:
-                backup_file = os.path.join(output_dir, f"{filename}.sql")
-
-            # Prepare the command to dump a database
-            if args.db_tool == "pg_dump":
-                command = [
-                    "pg_dump",
-                    f"--host={db_host}",
-                    f"--port={db_port}",
-                    f"--dbname={db_name}",
-                    f"--username={db_user}",
-                    f"--file={backup_file}",
-                ]
-                
-                # (REQUIRED) Set the PostgreSQL password environment variable
-                env = os.environ.copy()
-                env["PGPASSWORD"] = db_password
-            elif args.db_tool == "mysqldump":
-                # Path for the temporary MySQL config file
-                mysql_config_path = SCRIPT_DIR + f"/.{backup_id}_mysql_temp.cnf"
-                
-                # Write the password to a temporary MySQL config file
-                with open(mysql_config_path, "w") as mysql_config:
-                    mysql_config.write(f"[client]\npassword={db_password}\n")
-                
-                # Set file permissions to read-only for the owner
-                os.chmod(mysql_config_path, 0o400)
-
-                command = [
-                    "mysqldump",
-                    f"--defaults-extra-file={mysql_config_path}",
-                    f"--host={db_host}",
-                    f"--port={db_port}",
-                    f"--user={db_user}",
-                    # f"--password={db_password}",
-                    db_name,
-                    f"--result-file={backup_file}",
-                ]
-                
-                # Set any custom environment variable for backup
-                env = os.environ.copy()
-                env["B4CKUP_ENV"] = "True"
-
-            # Add any extra parameters provided by the user
-            if extra_params:
-                command.extend(extra_params.split())
-
-            try:
-                # Handle compression or encryption as needed
-                if compress:
-                    # Remove the result file argument
-                    if args.db_tool == "pg_dump":
-                        del command[5]
-                    elif args.db_tool == "mysqldump":
-                        del command[6]
-                    
-                    backup_file = compress_backup(
-                        command,
-                        env,
-                        backup_file,
-                        compress_format,
-                        compress_level,
-                        encrypt_password,
-                    )
-                else:
-                    if encrypt_password:
-                        # Remove the file argument for encryption
-                        if args.db_tool == "pg_dump":
-                            del command[5]
-                        elif args.db_tool == "mysqldump":
-                            del command[6]
-                        
-                        backup_file = encrypt_backup(
-                            command, env, backup_file, encrypt_password
-                        )
-                    else:
-                        # Execute the command to perform the backup
-                        with subprocess.Popen(
-                            command,
-                            env=env,
-                            stderr=subprocess.PIPE,
-                        ) as db_process:
-                            for line in db_process.stderr:
-                                logging.info(f"[{backup_tool.upper()}] | {line.rstrip().decode()}")
-                                check_stderr(line.decode(), command)
-
-                            # Wait for the processe to complete
-                            db_process.communicate()
-
-                            check_exit_code(db_process.returncode, f"{backup_tool} process")
-
-                backup_file_size = check_backup_size(backup_file, command) # Check backup file size
-
-                logging.info(f"{db_type} backup successfully created: {backup_file}")
-                logging.info(f"File size: {backup_file_size}")
-            except subprocess.CalledProcessError as e:
-                logging.error(f"Error during {db_type} backup: {str(e)}", exc_info=True)
-                exit(1)
-            finally:
-                if args.db_tool == "mysqldump":
-                    os.remove(mysql_config_path)
-
-        # SSH tunneling
-        def open_ssh_tunnel(
-            ssh_host, ssh_port, ssh_user, ssh_key, ssh_extra_params, db_host, db_port, local_forward_port
-        ):
-            """Open SSH tunnel using a private key"""
-
-            check_utility("ssh")
-
-            logging.info("Connecting to database via SSH tunnel...")
-
-            ssh_command = [
-                "ssh",
-                "-q",
-                *(ssh_extra_params.split() if ssh_extra_params else []),
-                "-f",
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                "-o", "ExitOnForwardFailure=yes",
-                "-L", f"{local_forward_port}:{db_host}:{db_port}",
+    try:
+        with subprocess.Popen(ssh_command):
+            time.sleep(5)
+            logging.info(
+                "SSH tunnel opened: local port %s -> %s:%s",
+                local_forward_port,
                 ssh_host,
-                "-p", ssh_port,
-                "-l", ssh_user,
-                "-i", ssh_key,
-                "sleep 10",
-            ]
-
-            try:
-                tunnel = subprocess.Popen(ssh_command)
-                time.sleep(5)
-                logging.info(
-                    f"SSH tunnel opened: local port {local_forward_port} -> {ssh_host}:{db_port}"
-                )
-            except Exception as e:
-                logging.error(f"Error opening SSH tunnel: {e}", exc_info=True)
-                exit(1)
-
-            return ssh_command
-
-        ## Start backup
-        if args.remove_old:
-            # Remove old backups if specified
-            remove_old_backup(
-                args.output_dir, args.remove_old, args.keep, args.keep_weekly, args.keep_monthly
-            )
-
-        # Check available disk space in the output directory
-        check_disk_space(args.output_dir)
-
-        lock_file  = create_lock_file()# Create a lock file to prevent concurrent backups
-
-        # Set default database port if not provided by the user
-        if not args.db_port:
-            if args.db_tool == "pg_dump":
-                db_port = 5432 # Default PostgreSQL port
-            elif args.db_tool == "mysqldump":
-                db_port = 3306 # Default MySQL port
-        else:
-            db_port = args.db_port
-
-        # Get database password from user input if not provided
-        if args.db_password:
-            db_password = args.db_password
-        elif args.db_password_input:
-            db_password = getpass.getpass(prompt="Enter database password: ")
-
-        # Get encryption password from user input if not provided
-        if args.encrypt_password:
-            encrypt_password = args.encrypt_password
-        elif args.encrypt_password_input:
-            encrypt_password = getpass.getpass(prompt="Enter encryption password: ")
-        else:
-            encrypt_password = None
-
-        # Set local forward port for SSH if not provided
-        if args.local_forward_port:
-            local_forward_port = args.local_forward_port
-        else:
-            local_forward_port = db_port
-
-        try:
-            if args.ssh_host:
-                # Open SSH tunnel if SSH host is provided
-                ssh_tunnel = open_ssh_tunnel(
-                    ssh_host=args.ssh_host,
-                    ssh_port=args.ssh_port,
-                    ssh_user=args.ssh_user,
-                    ssh_key=args.ssh_key,
-                    ssh_extra_params=args.ssh_extra_params,
-                    db_host=args.db_host,
-                    db_port=db_port,
-                    local_forward_port=local_forward_port
-                )
-                
-                db_host = "127.0.0.1" # Use local address for database host
-                db_port = local_forward_port # Use local forward port for database
-            else:
-                db_host = args.db_host # Use provided database host directly
-            # Perform the database backup based on user choice
-            backup_database(
-                db_host,
                 db_port,
-                args.db_name,
-                args.db_user,
-                db_password,
-                args.output_dir,
-                args.extra_params,
-                args.compress,
-                args.compress_format,
-                args.compress_level,
-                encrypt_password,
-                args.filename,
-                args.label_keep,
-                args.label_weekly,
-                args.label_monthly,
             )
-            
-            # If Zabbix config and key are provided, set the value to success
-            if args.zbx_config and args.zbx_key:
-                global zbx_value
-                zbx_value = "1"
-        finally:
-            remove_lock_file(lock_file ) # Ensure the lock file is removed after operation
+
+    except Exception as error_msg:
+        logging.error("Error opening SSH tunnel: %s", error_msg, exc_info=True)
+        sys.exit(1)
+
+    return ssh_command
 
 
-    #########################
-    ### ARGUMENTS PARSING ###
-    #########################
+def zabbix_sender(zbx_config, zbx_key, zbx_value, zbx_extra_params):
+    """Send backup completion data to Zabbix"""
 
-    # Create an argument parser for the backup script
-    parser = configargparse.ArgumentParser(
-        description="Backup script for files (tar, rsync) and databases (pg_dump, mysqldump)"
-    )
-    # Add subparsers for different modes of operation
-    subparsers = parser.add_subparsers(
-        dest="mode",
-        required=True,
-        help="select mode: 'file' for file backup, 'db' for database backup or config-gen to generate config",
-    )
+    # Check if the 'zabbix_sender' utility is available
+    check_utility("zabbix_sender")
 
-    # Parser for file backup mode
-    file_parser = subparsers.add_parser("file")
-    file_subparsers = file_parser.add_subparsers(
-        dest="file_tool", required=True, help="file backup tool"
-    )
-    # Subparser for tar tool
-    tar_parser = file_subparsers.add_parser("tar", help="for file archiving")
-    # Subparser for rsync tool
-    rsync_parser = file_subparsers.add_parser("rsync", help="for file syncing")
+    # Prepare the command to send data to Zabbix
+    command = [
+        "zabbix_sender",
+        "--config",
+        zbx_config,
+        "--key",
+        zbx_key,
+        "--value",
+        zbx_value,
+    ]
 
-    # Parser for database backup mode
-    db_parser = subparsers.add_parser("db")
-    db_subparsers = db_parser.add_subparsers(
-        dest="db_tool", required=True, help="database backup tool"
-    )
-    # Subparser for PostgreSQL
-    postgresql_parser = db_subparsers.add_parser("pg_dump", help="for PostgreSQL")
-    # Subparser for MySQL
-    mysql_parser = db_subparsers.add_parser("mysqldump", help="for MySQL")
+    # If extra parameters are provided, split and add them to the command
+    if zbx_extra_params:
+        command.extend(zbx_extra_params.split())
 
-    # Parser for config generation
-    config_gen_parser = subparsers.add_parser("config-gen")
-    config_gen_subparsers = config_gen_parser.add_subparsers(
-        dest="config_gen", required=True, help="config generation"
-    )
-    config_gen_tar_parser = config_gen_subparsers.add_parser(
-        "tar",
-        help="generate config for tar"
-    )
-    config_gen_rsync_parser = config_gen_subparsers.add_parser(
-        "rsync",
-        help="generate config for rsync"
-    )
-    config_gen_pg_dump_parser = config_gen_subparsers.add_parser(
-        "pg_dump",
-        help="generate config for pg_dump"
-    )
-    config_gen_mysqldump_parser = config_gen_subparsers.add_parser(
-        "mysqldump",
-        help="generate config for mysqldump"
-    )
+    logging.info("Sending backup status to Zabbix (1 = success, 0 = failure)")
+    logging.info("Zabbix key: %s", zbx_key)
+    logging.info("Zabbix value: %s", zbx_value)
+
+    try:
+        # Execute the command and raise an error if it fails
+        # If the command is executed but data is not sent, then repeat 3 times
+        for _ in range(3):
+            fail = False
+
+            with subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+            ) as zbx_process:
+                for line in zbx_process.stdout:
+                    logging.info("[ZABBIX] | %s", line.rstrip())
+                    check_stderr(line, command)
+                    if "processed: 0" in line:
+                        fail = True
+
+                for line in zbx_process.stderr:
+                    logging.info("[ZABBIX] | %s", line.rstrip())
+                    check_stderr(line, command)
+                    if "processed: 0" in line:
+                        fail = True
+
+                # Wait for the process to complete
+                zbx_process.communicate()
+
+                if not fail:
+                    break
+
+                logging.warning(
+                    "Unable to send data to Zabbix server with config: %s and key: %s, retrying...",
+                    zbx_config,
+                    zbx_key,
+                )
+                time.sleep(2)
+                continue
+
+    except subprocess.CalledProcessError as error_msg:
+        # Log any errors that occur during the data sending process
+        logging.error("Error sending data to Zabbix: %s", str(error_msg), exc_info=True)
+
+
+def parse_common_args(tool_parser):
+    """Parse parameters for all backup tools"""
 
     # Add argument for config file and logging to all backup tools
-    for tool_parser in [tar_parser, rsync_parser, postgresql_parser, mysql_parser]:
-        tool_parser.add_argument(
-            "--config",
-            metavar="FILE",
-            is_config_file=True,
-            help="path to YAML config file (command line arguments override config file values)",
-        )
-        tool_parser.add_argument(
-            "--logfile",
-            nargs="?",
-            metavar="PATH",
-            help="write the script output to log a file"
-        )
-        tool_parser.add_argument(
-            "--logfile-append",
-            action="store_true",
-            help="append the script output to log a file"
-        )
-        tool_parser.add_argument(
-            "--silent",
-            action="store_true",
-            help="enable quiet mode"
-        )
+    tool_parser.add_argument(
+        "--config",
+        metavar="FILE",
+        is_config_file=True,
+        help="path to YAML config file (command line arguments override config file values)",
+    )
 
-    # Add database specific arguments for PostgreSQL and MySQL
-    for tool_parser in [postgresql_parser, mysql_parser]:
-        tool_parser.add_argument(
-            "--db-host", required=True, metavar="HOST", help="database address"
-        )
-        tool_parser.add_argument(
-            "--db-port", type=int, metavar="PORT", help="database port"
-        )
-        tool_parser.add_argument(
-            "--db-name", required=True, metavar="NAME", help="database name"
-        )
-        tool_parser.add_argument(
-            "--db-user", required=True, metavar="USER", help="database user"
-        )
-        # Mutually exclusive group for password handling
-        password_group = tool_parser.add_mutually_exclusive_group()
-        password_group.add_argument(
-            "--db-password", metavar="PASSWORD", help="database password"
-        )
-        password_group.add_argument(
-            "--db-password-input", action="store_true", help="enter password interactively"
-        )
+    # Add logging parameters
+    tool_parser.add_argument(
+        "--logfile",
+        nargs="?",
+        metavar="PATH",
+        help="write the script output to log a file",
+    )
+    tool_parser.add_argument(
+        "--logfile-append",
+        action="store_true",
+        help="append the script output to log a file",
+    )
+    tool_parser.add_argument("--silent", action="store_true", help="disable stdout")
 
-    # Add specific arguments for file backup tools
-    for tool_parser in [tar_parser, rsync_parser]:
-        tool_parser.add_argument(
-            "--source-dir",
-            required=True,
-            metavar="PATH",
-            help="path to directory with files to be backed up",
-        )
-        tool_parser.add_argument(
-            "--source-file",
-            metavar="NAME_or_LIST",
-            help="optional (in quotes), name of specific file(s) in source directory (without ./)",
-        )
+    # Add Zabbix parameters
+    tool_parser.add_argument(
+        "--zbx-config", metavar="PATH", help="path to Zabbix agent config file"
+    )
+    tool_parser.add_argument(
+        "--zbx-key", metavar="KEY", help="data key for sending to Zabbix"
+    )
+    tool_parser.add_argument(
+        "--zbx-extra-params",
+        metavar="PARAMS",
+        help="extra parameters (in quotes) for zabbix_sender command (if there is one param, add space at end)",
+    )
 
-    # Add common output directory and extra parameters for all backup tools
-    for tool_parser in [tar_parser, rsync_parser, postgresql_parser, mysql_parser]:
-        tool_parser.add_argument(
-            "--output-dir",
-            required=True,
-            metavar="PATH",
-            help="path to backup storage directory",
-        )
-        tool_parser.add_argument(
-            "--extra-params",
-            metavar="PARAMS",
-            help="extra parameters (in quotes) for pg_dump or mysqldump commands (if there is only one param starting with '--' add space at end)",
-        )
-
-    # Add common filename, old backup removal, and compression options
-    for tool_parser in [tar_parser, postgresql_parser, mysql_parser]:
-        # Mutually exclusive group for filename and label options
-        filename_group = tool_parser.add_mutually_exclusive_group()
-        filename_group.add_argument(
-            "--filename", metavar="NAME", help="custom backup file name (no extension)"
-        )
-        filename_group.add_argument("--label-keep", action="store_true", help="add keep label in name")
-        filename_group.add_argument("--label-weekly", action="store_true", help="add weekly label in name")
-        filename_group.add_argument("--label-monthly", action="store_true", help="add monthly label in name")
-        tool_parser.add_argument(
-            "--remove-old",
-            type=int,
-            nargs="?",
-            const=14,
-            metavar="DAYS",
-            help="delete old backups (default older 14 days), save all files with 'keep' in name",
-        )
-        tool_parser.add_argument(
-            "--keep",
-            action="store_true",
-            help="save all backups with 'keep' in name",
-        )
-        tool_parser.add_argument(
-            "--keep-weekly",
-            type=int,
-            nargs="?",
-            const=1,
-            metavar="AMOUNT",
-            help="save (default 1) backups with 'weekly' in name",
-        )
-        tool_parser.add_argument(
-            "--keep-monthly",
-            type=int,
-            nargs="?",
-            const=1,
-            metavar="AMOUNT",
-            help="save (default 1) backups with 'monthly' in name",
-        )
-        tool_parser.add_argument("--compress", action="store_true", help="compress backup")
-        tool_parser.add_argument(
-            "--compress-format",
-            choices=["gzip", "xz", "bzip2", "pigz"],
-            metavar="FORMAT",
-            help="compression format: gzip, xz, bzip2, pigz",
-        )
-        tool_parser.add_argument(
-            "--compress-level",
-            choices=["1", "2", "3", "4", "5", "6", "7", "8", "9"],
-            metavar="LEVEL",
-            help="compression ratio from 1 to 9",
-        )
-        # Mutually exclusive group for encryption options
-        encryption_group = tool_parser.add_mutually_exclusive_group()
-        encryption_group.add_argument(
-            "--encrypt-password",
-            metavar="PASSWORD",
-            help="enable gpg ecnryption with password",
-        )
-        encryption_group.add_argument(
-            "--encrypt-password-input",
-            help="enable gpg ecnryption and enter password interactively",
-        )
-
-    # Add SSH parameters to all backup tools
-    for tool_parser in [tar_parser, rsync_parser, postgresql_parser, mysql_parser]:
-        tool_parser.add_argument("--ssh-host", metavar="HOST", help="SSH host")
-        tool_parser.add_argument("--ssh-port", metavar="PORT", help="SSH port")
-        tool_parser.add_argument("--ssh-user", metavar="USER", help="SSH username")
-        tool_parser.add_argument(
-            "--ssh-key", metavar="PATH", help="path to SSH private key file"
-        ),
-        tool_parser.add_argument(
-            "--ssh-extra-params",
-            metavar="PARAMS",
-            help="extra parameters (in quotes) for SSH"
-        ),
+    return tool_parser
 
 
-    # Add local forward port argument for database tools
-    for tool_parser in [postgresql_parser, mysql_parser]:
+def parse_hash_args(tool_parser):
+    """Add common filename, old backup removal, and compression options"""
+
+    tool_parser.add_argument(
+        "--hash-file",
+        action="store_true",
+        help="create a file with sha-256 hash of buackup file",
+    )
+
+
+def parse_filename_args(tool_parser):
+    """Mutually exclusive group for filename and label options"""
+
+    filename_group = tool_parser.add_mutually_exclusive_group()
+    filename_group.add_argument(
+        "--filename", metavar="NAME", help="custom backup file name (no extension)"
+    )
+    filename_group.add_argument(
+        "--label-keep", action="store_true", help="add keep label in name"
+    )
+    filename_group.add_argument(
+        "--label-weekly", action="store_true", help="add weekly label in name"
+    )
+    filename_group.add_argument(
+        "--label-monthly", action="store_true", help="add monthly label in name"
+    )
+
+    return tool_parser
+
+
+def parse_retention_args(tool_parser):
+    """Parse parameters for backup retention policy"""
+
+    tool_parser.add_argument(
+        "--remove-old",
+        type=int,
+        nargs="?",
+        const=14,
+        metavar="DAYS",
+        help="delete old backups (default older 14 days), save all files with 'keep' in name",
+    )
+    tool_parser.add_argument(
+        "--keep",
+        action="store_true",
+        help="save all backups with 'keep' in name",
+    )
+    tool_parser.add_argument(
+        "--keep-weekly",
+        type=int,
+        nargs="?",
+        const=1,
+        metavar="AMOUNT",
+        help="save (default 1) backups with 'weekly' in name",
+    )
+    tool_parser.add_argument(
+        "--keep-monthly",
+        type=int,
+        nargs="?",
+        const=1,
+        metavar="AMOUNT",
+        help="save (default 1) backups with 'monthly' in name",
+    )
+
+    return tool_parser
+
+
+def parse_compression_args(tool_parser):
+    """Parse parameters for compression"""
+
+    tool_parser.add_argument("--compress", action="store_true", help="compress backup")
+    tool_parser.add_argument(
+        "--compress-format",
+        choices=["gzip", "pigz", "bzip2", "pbzip2", "xz", "zstd"],
+        metavar="FORMAT",
+        help="compression format: gzip, pigz, bzip2, pbzip, xz, zstd",
+    )
+    tool_parser.add_argument(
+        "--compress-level",
+        # choices=["1", "2", "3", "4", "5", "6", "7", "8", "9"],
+        type=int,
+        metavar="LEVEL",
+        help="compression ratio from 1 to 9",
+    )
+
+    return tool_parser
+
+
+def parse_encryption_args(tool_parser):
+    """Mutually exclusive group for encryption options"""
+
+    encryption_group = tool_parser.add_mutually_exclusive_group()
+    encryption_group.add_argument(
+        "--encrypt-password",
+        metavar="PASSWORD",
+        help="enable gpg ecnryption with password",
+    )
+    encryption_group.add_argument(
+        "--encrypt-password-input",
+        action="store_true",
+        help="enable gpg ecnryption and enter password interactively",
+    )
+
+    return tool_parser
+
+
+def parse_ssh_args(tool_parser):
+    """Add SSH parameters to all backup tools"""
+
+    tool_parser.add_argument("--ssh-host", metavar="HOST", help="SSH host")
+    tool_parser.add_argument("--ssh-port", metavar="PORT", help="SSH port")
+    tool_parser.add_argument("--ssh-user", metavar="USER", help="SSH username")
+    tool_parser.add_argument(
+        "--ssh-key", metavar="PATH", help="path to SSH private key file"
+    )
+    tool_parser.add_argument(
+        "--ssh-extra-params",
+        metavar="PARAMS",
+        help="extra parameters (in quotes) for SSH",
+    )
+
+    if BACKUP_TOOL in ["pg_dump", "mysqldump"]:
+        # Add local forward port argument for database tools
         tool_parser.add_argument(
             "--local-forward-port",
+            # required=True,
             metavar="PORT",
             type=int,
             help="local port for SSH forwarding",
         )
 
-    # Add Zabbix parameters to all backup tools
-    for tool_parser in [tar_parser, rsync_parser, postgresql_parser, mysql_parser]:
-        tool_parser.add_argument(
-            "--zbx-config", metavar="PATH", help="path to Zabbix agent config file"
-        )
-        tool_parser.add_argument(
-            "--zbx-key", metavar="KEY", help="data key for sending to Zabbix"
-        )
-        tool_parser.add_argument(
-            "--zbx-extra-params",
-            metavar="PARAMS",
-            help="extra parameters (in quotes) for zabbix_sender command (if there is one param, add space at end)",
-        )
+    return tool_parser
 
-    # Execute the argument parser
-    args = parser.parse_args()
 
-    def get_env_value(value):
-        """Get the environment variable value if the input matches the pattern"""
+def setup_logging(parser, args):
+    """Configure logging"""
 
-        env_var_pattern = re.compile(r"^\$([A-Z_][A-Z0-9_]*)$", re.IGNORECASE) # Regex pattern for environment variables
-        match = env_var_pattern.match(value) # Check if the value matches the pattern
-        
-        if match:
-            env_var = match.group(1) # Extract the variable name
-            return os.getenv(env_var, value) # Return the value from the environment or the original value
-        
-        return value # Return the original value if no match
+    if args.logfile_append and not args.logfile:
+        parser.error("Required parameter to write log: --logfile")
 
-    # Loop through all arguments and reassign with environment variable values if applicable
-    for arg, value in vars(args).items():
-        if isinstance(value, str): # Check if the argument value is a string
-            new_value = get_env_value(value) # Get the environment variable value
-            setattr(args, arg, new_value) # Set the new value for the argument
-
-    # Define the backup tool variable
-    if args.mode == "db":
-        backup_tool = args.db_tool
-    elif args.mode == "file":
-        backup_tool = args.file_tool
-
-    # Define the backup id var
-    if args.mode == "file":
-        if args.file_tool == "rsync":
-            backup_id = f"{args.file_tool}_{args.output_dir}"
-        elif args.file_tool == "tar":
-            if not args.filename:
-                dir_path = os.path.abspath(args.source_dir)
-                dir_name = os.path.basename(dir_path)
-                
-                if args.label_keep:
-                    backup_id = f"{args.file_tool}_{dir_name}_keep"
-                elif args.label_weekly:
-                    backup_id = f"{args.file_tool}_{dir_name}_weekly"
-                elif args.label_monthly:
-                    backup_id = f"{args.file_tool}_{dir_name}_monthly"
-                else:
-                    backup_id = f"{args.file_tool}_{dir_name}"
+    if args.silent and not args.logfile:
+        # Set logging level higher than CRITICAL to suppress all logging output
+        logging.basicConfig(level=logging.CRITICAL + 1)
+    else:
+        if args.logfile:
+            if args.logfile == "true":
+                # Define the log file name based on the script's file name
+                log_file = os.path.splitext(os.path.realpath(__file__))[0] + ".log"
             else:
-                backup_id = f"{args.file_tool}_{args.filename}"
-    elif args.mode == "db":
-        if not args.filename:
-            if args.label_keep:
-                backup_id = f"{args.db_tool}_{args.db_name}_keep"
-            elif args.label_weekly:
-                backup_id = f"{args.db_tool}_{args.db_name}_weekly"
-            elif args.label_monthly:
-                backup_id = f"{args.db_tool}_{args.db_name}_monthly"
+                log_file = args.logfile
+
+            if not args.logfile_append:
+                # Check if the log file exists, and if so, clear its contents
+                if os.path.exists(log_file):
+                    with open(log_file, "w", encoding="utf-8") as f_log:
+                        pass  # Clear the file by opening it in write mode
+
+            if args.silent:
+                # Set up logging to only file
+                log_handlers = [logging.FileHandler(log_file)]
             else:
-                backup_id = f"{args.db_tool}_{args.db_name}"
+                # Set up logging to both file and console if a log file is specified
+                log_handlers = [logging.FileHandler(log_file), logging.StreamHandler()]
         else:
-            backup_id = f"{args.file_tool}_{args.filename}"
+            # Otherwise, set up logging only to console
+            log_handlers = [logging.StreamHandler()]
 
-    # Validate required arguments based on the selected mode (file or db)
-    if args.mode == "db":
-        if not (
-            args.db_host
-            and args.db_name
-            and args.db_user
-            and (args.db_password or args.db_password_input)
-        ):
-            parser.error(
-                "Required parameters to backup database: --db-host, --db-name, --db-user, --db-password or --db-password-input"
-            )
-        
+        # Configure logging with specified level, format, and handlers
+        logging.basicConfig(
+            level=logging.INFO,
+            format="[%(asctime)s] - [%(levelname)s] - %(message)s",
+            handlers=log_handlers,
+        )
+
+        # Print the dividing line
+        try:
+            terminal_width = os.get_terminal_size().columns
+            first_line = "*" * (terminal_width - 37)
+            logging.info(first_line)
+        except Exception:
+            first_line = "*" * 80
+            logging.info(first_line)
+
+        # Log startup message
+        logging.info("STARTING BACKUP PYTHON SCRIPT")
+
+        # Log the location of the log file if specified
+        if args.logfile:
+            logging.info("Log file: %s", log_file)
+
+
+def custom_check_args(parser, args):
+    """Check if both Zabbix config and key are provided or neither"""
+
+    if (args.zbx_config and not args.zbx_key) or (args.zbx_key and not args.zbx_config):
+        parser.error(
+            "Required parameters to send data to Zabbix: --zbx-config, --zbx-key"
+        )
+
+    if BACKUP_TOOL != "rsync":
         if (args.keep or args.keep_weekly or args.keep_monthly) and not args.remove_old:
             parser.error("Required parameter to delete old backups: --remove-old")
-        
+
         if (args.compress_format or args.compress_level) and not args.compress:
             parser.error("Required parameter to use compression: --compress")
-        
+
+    if BACKUP_TOOL in ["pg_dump", "mysqldump"]:
+        if (args.ssh_host or args.ssh_port or args.ssh_user or args.ssh_key or args.local_forward_port) and not (
+            args.ssh_host and args.ssh_port and args.ssh_user and args.ssh_key and args.local_forward_port
+        ):
+            parser.error(
+                "Required parameters to use SSH: --ssh-host, --ssh-port, --ssh-user, --ssh-key and --local-forward-port"
+            )
+    else:
         if (args.ssh_host or args.ssh_port or args.ssh_user or args.ssh_key) and not (
             args.ssh_host and args.ssh_port and args.ssh_user and args.ssh_key
         ):
@@ -1526,82 +1035,1015 @@ def main():
                 "Required parameters to use SSH: --ssh-host, --ssh-port, --ssh-user and --ssh-key"
             )
 
-    if args.mode == "file":
-        if args.file_tool == "tar":
-            if (args.keep_weekly or args.keep_monthly) and not args.remove_old:
-                parser.error("Required parameter to delete old backups: --remove-old")
-            
-            if (args.compress_format or args.compress_level) and not args.compress:
-                parser.error("Required parameter to use compression: --compress")
-        
-        if (args.ssh_host or args.ssh_port or args.ssh_user or args.ssh_key or args.ssh_extra_params) and not (
-            args.ssh_host and args.ssh_port and args.ssh_user and args.ssh_key
-        ):
-            parser.error(
-                "Required parameters to use SSH: --ssh-host, --ssh-port, --ssh-user and --ssh-key"
+
+def run_command(cmd: list, file: str = None, env: str = None, pipe: bool = False):
+    """External command execution"""
+
+    if not pipe:
+        with subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            # check=True
+        ) as cmd_process:
+            for line in cmd_process.stdout:
+                logging.info("[%s] | %s}", BACKUP_TOOL.upper(), line.rstrip())
+                check_stderr(line, cmd)
+
+            for line in cmd_process.stderr:
+                logging.info("[%s] | %s", BACKUP_TOOL.upper(), line.rstrip())
+                check_stderr(line, cmd)
+
+            # Wait for the process to complete
+            cmd_process.communicate()
+
+            check_exit_code(cmd_process.returncode, f"{BACKUP_TOOL} process")
+    else:
+        # Handle backup using SSH
+        with open(file, "wb") as f_out:
+            with subprocess.Popen(
+                cmd, env=env, stdout=f_out, stderr=subprocess.PIPE
+            ) as cmd_process:
+                for line in cmd_process.stderr:
+                    logging.info(
+                        "[%s] | %s",
+                        BACKUP_TOOL.upper(),
+                        line.rstrip().decode(),
+                    )
+                    check_stderr(line.decode(), cmd)
+
+                # Wait for the process to complete
+                cmd_process.communicate()
+
+                check_exit_code(
+                    cmd_process.returncode, f"{BACKUP_TOOL} process"
+                )
+
+
+####################
+### BACKUP FILES ###
+####################
+
+def backup_with_tar():
+    """Backup files with tar"""
+
+    # Create an argument parser for the backup script
+    parser = configargparse.ArgumentParser(
+        description="Backup script for tar archiving"
+    )
+    # Add subparsers for different modes of operation
+    subparsers = parser.add_subparsers(
+        dest="BACKUP_TOOL",
+        required=True,
+    )
+    tool_parser = subparsers.add_parser("tar", help="for file archiving")
+
+    tool_parser.add_argument(
+        "--source-dir",
+        required=True,
+        metavar="PATH",
+        help="path to directory with files to be backed up",
+    )
+    tool_parser.add_argument(
+        "--source-file",
+        metavar="NAME_or_LIST",
+        help="optional (in quotes), name of specific file(s) in source directory (without ./)",
+    )
+    # Add common output directory and extra parameters for all backup tools
+    tool_parser.add_argument(
+        "--output-dir",
+        required=True,
+        metavar="PATH",
+        help="path to backup storage directory",
+    )
+    tool_parser.add_argument(
+        "--extra-params",
+        metavar="PARAMS",
+        help=f"extra parameters (in quotes) for {BACKUP_TOOL} command (if there is only one param starting with '--' add space at end)",
+    )
+
+    # Execute the common argument parsers
+    parse_common_args(tool_parser)
+    parse_hash_args(tool_parser)
+    parse_filename_args(tool_parser)
+    parse_retention_args(tool_parser)
+    parse_compression_args(tool_parser)
+    parse_encryption_args(tool_parser)
+    parse_ssh_args(tool_parser)
+
+    args = parser.parse_args() # Execute the argument parser
+
+    # Loop through all arguments and reassign with environment variable values if applicable
+    for arg, value in vars(args).items():
+        if isinstance(value, str):  # Check if the argument value is a string
+            new_value = get_env_value(value)  # Get the environment variable value
+            setattr(args, arg, new_value)  # Set the new value for the argument
+
+    custom_check_args(parser, args) # Execute the custom argument checks
+
+    setup_logging(parser, args) # Setup logging function
+
+    # Define the backup id var
+    dir_path = os.path.abspath(args.source_dir)
+    dir_name = os.path.basename(dir_path)
+
+    if not args.filename:
+        if args.label_keep:
+            backup_id = f"{BACKUP_TOOL}_{dir_name}_keep"
+        elif args.label_weekly:
+            backup_id = f"{BACKUP_TOOL}_{dir_name}_weekly"
+        elif args.label_monthly:
+            backup_id = f"{BACKUP_TOOL}_{dir_name}_monthly"
+        else:
+            backup_id = f"{BACKUP_TOOL}_{dir_name}"
+    else:
+        backup_id = f"{BACKUP_TOOL}_{args.filename}"
+
+    # Handle encryption password input
+    if not args.encrypt_password:
+        args.encrypt_password = None
+
+    if args.encrypt_password_input:
+        args.encrypt_password = getpass.getpass(prompt="Enter encryption password: ")
+
+    logging.info("Starting Tar backup...")
+
+    # Check if the 'tar' utility is available
+    check_utility(BACKUP_TOOL)
+
+    # Remove old backups if specified
+    remove_old_backup(
+        args.output_dir, args.remove_old, args.keep, args.keep_weekly, args.keep_monthly
+    )
+
+    # Determine the backup file name based on provided filename or default naming
+    if not args.filename:
+        dir_abspath = os.path.abspath(args.source_dir)
+        dir_basename = os.path.basename(dir_abspath)
+
+        if args.label_keep:
+            backup_file = os.path.join(
+                args.output_dir, f"{dir_basename}_backup_keep_{TIMESTAMP}.tar"
             )
-
-    if args.mode != "config-gen":
-        # Check if both Zabbix config and key are provided or neither
-        if (args.zbx_config and not args.zbx_key) or (args.zbx_key and not args.zbx_config):
-            parser.error("Required parameters to send data to Zabbix: --zbx-config, --zbx-key")
-
-        # Configure logging
-        if args.logfile_append and not args.logfile:
-             parser.error("Required parameter to write log: --logfile")
-
-        if args.silent and not args.logfile:
-            # Set logging level higher than CRITICAL to suppress all logging output
-            logging.basicConfig(
-                level=logging.CRITICAL + 1
+        elif args.label_weekly:
+            backup_file = os.path.join(
+                args.output_dir, f"{dir_basename}_backup_weekly_{TIMESTAMP}.tar"
+            )
+        elif args.label_monthly:
+            backup_file = os.path.join(
+                args.output_dir, f"{dir_basename}_backup_monthly_{TIMESTAMP}.tar"
             )
         else:
-            if args.logfile:
-                if args.logfile == "true":
-                    # Define the log file name based on the script's file name
-                    LOG_FILE = os.path.splitext(os.path.realpath(__file__))[0] + ".log"
-                else:
-                    LOG_FILE = args.logfile
-                
-                if not args.logfile_append:
-                    # Check if the log file exists, and if so, clear its contents
-                    if os.path.exists(LOG_FILE):
-                        with open(LOG_FILE, 'w') as file:
-                            pass # Clear the file by opening it in write mode
-                
-                if args.silent: 
-                    # Set up logging to only file
-                    log_handlers = [logging.FileHandler(LOG_FILE)]
-                else:
-                    # Set up logging to both file and console if a log file is specified
-                    log_handlers = [logging.FileHandler(LOG_FILE), logging.StreamHandler()]
-            else:
-                # Otherwise, set up logging only to console
-                log_handlers = [logging.StreamHandler()]
-            
-            # Configure logging with specified level, format, and handlers
-            logging.basicConfig(
-                level=logging.INFO,
-                format="[%(asctime)s] - [%(levelname)s] - %(message)s",
-                handlers=log_handlers
+            backup_file = os.path.join(
+                args.output_dir, f"{dir_basename}_backup_{TIMESTAMP}.tar"
             )
-            
-            # Print the dividing line
-            try:
-                terminal_width = os.get_terminal_size().columns
-                first_line = "*" * (terminal_width - 37)
-                logging.info(first_line)
-            except Exception:
-                first_line = "*" * 80
-                logging.info(first_line)
-                pass
+    else:
+        backup_file = os.path.join(args.output_dir, f"{args.filename}.tar")
 
-            # Log startup message
-            logging.info("STARTING BACKUP PYTHON SCRIPT")
-            
-            # Log the location of the log file if specified
-            if args.logfile:
-                logging.info(f"Log file: {LOG_FILE}")
+    # Check available disk space in the output directory
+    check_disk_space(args.output_dir)
+
+    # Create a lock file to prevent concurrent backups
+    lock_file = create_lock_file(backup_id)
+
+    zbx_value = "0" # Default zabbix value
+
+
+
+    # Prepare the command to create a tar archive
+    command = [
+        "tar",
+        # "--warning=no-file-changed",
+        # "--ignore-failed-read",
+        "--create",
+        f"--file={backup_file}",
+        f"--directory={args.source_dir}",
+        "./",  # Include all files in the source directory
+    ]
+
+    # If specific files are provided, adjust the command accordingly
+    if args.source_file:
+        del command[4]  # Remove the placeholder for "./"
+        command.extend(args.source_file.split())
+
+    # Adjust command if compression, SSH, or encryption is required
+    if args.compress or args.ssh_host or args.encrypt_password:
+        command[2] = "--file=-"
+
+    if args.extra_params:
+        # Split parameters and find the position to insert
+        params_to_add = args.extra_params.split()
+        position = command.index("--create") + 1
+
+        for param in params_to_add:
+            command.insert(position, param)
+            position += 1  # Shift position after each inserted parameter
+
+    # If using SSH, prepare the SSH command
+    if args.ssh_host:
+        check_utility("ssh")
+
+        ssh_prefix = [
+            "ssh",
+            "-q",
+            *(args.ssh_extra_params.split() if args.ssh_extra_params else []),
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            args.ssh_host,
+            "-p",
+            args.ssh_port,
+            "-l",
+            args.ssh_user,
+            "-i",
+            args.ssh_key,
+        ]
+
+        command = ssh_prefix + command  # Prepend SSH command to tar command
+
+    # Set any custom environment variable for the backup process
+    env = os.environ.copy()
+    env["TAR_OPTIONS"] = ""
+
+    logging.info("Starting file backup with tar...")
+
+    try:
+        # Call the compression or encryption function based on user options
+        if args.compress:
+            backup_file = compress_backup(
+                backup_id,
+                command,
+                env,
+                backup_file,
+                args.compress_format,
+                args.compress_level,
+                args.encrypt_password,
+            )
+        else:
+            if args.encrypt_password:
+                # Encrypt the backup if a password is provided
+                backup_file = args.encrypt_backup(
+                    backup_id, command, env, backup_file, args.encrypt_password
+                )
+            else:
+                if args.ssh_host:
+                    # Handle backup using SSH
+                    with open(backup_file, "wb") as f_out:
+                        with subprocess.Popen(
+                            command, env=env, stdout=f_out, stderr=subprocess.PIPE
+                        ) as tar_process:
+                            for line in tar_process.stderr:
+                                logging.info(
+                                    "[%s] | %s",
+                                    BACKUP_TOOL.upper(),
+                                    line.rstrip().decode(),
+                                )
+                                check_stderr(line.decode(), command)
+
+                            # Wait for the process to complete
+                            tar_process.communicate()
+
+                            check_exit_code(
+                                tar_process.returncode, f"{BACKUP_TOOL} process"
+                            )
+                else:
+                    # Run the tar command directly without SSH
+                    with subprocess.Popen(
+                        command,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        universal_newlines=True,
+                        # check=True
+                    ) as tar_process:
+                        for line in tar_process.stdout:
+                            logging.info(
+                                "[%s] | %s}", BACKUP_TOOL.upper(), line.rstrip()
+                            )
+                            check_stderr(line, command)
+
+                        for line in tar_process.stderr:
+                            logging.info(
+                                "[%s] | %s", BACKUP_TOOL.upper(), line.rstrip()
+                            )
+                            check_stderr(line, command)
+
+                        # Wait for the process to complete
+                        tar_process.communicate()
+
+                        check_exit_code(
+                            tar_process.returncode, f"{BACKUP_TOOL} process"
+                        )
+
+        logging.info("File backup successfully created: %s", backup_file)
+        
+        backup_file_size = check_backup_size(backup_file, command) # Get file size
+        logging.info("File size: %s", backup_file_size)
+
+        if args.hash_file:
+            backup_file_hash = calculate_sha256(backup_file) # Get file sha-256 hash
+            logging.info("File SHA-256 hash: %s", backup_file_hash)
+            logging.info("Hash saved to %s.sha256", backup_file)
+
+        # If Zabbix config and key are provided, set the value to success
+        if args.zbx_config and args.zbx_key:
+            zbx_value = "1"
+    except Exception as error_msg:
+        logging.error(
+            "Error during file backup with tar: %s", str(error_msg), exc_info=True
+        )
+        sys.exit(1)
+    finally:
+        remove_lock_file(lock_file)  # Ensure lock file is removed after operation
+        if args.zbx_config and args.zbx_key:
+            zabbix_sender(
+                args.zbx_config, args.zbx_key, zbx_value, args.zbx_extra_params
+            )
+
+
+def backup_with_rsync():
+    """Backup files with rsync"""
+
+    # Create an argument parser for the backup script
+    parser = configargparse.ArgumentParser(
+        description="Backup script for files (tar, rsync) and databases (pg_dump, mysqldump)"
+    )
+    # Add subparsers for different modes of operation
+    subparsers = parser.add_subparsers(dest="BACKUP_TOOL", required=True)
+
+    tool_parser = subparsers.add_parser("rsync", help="for file syncing")
+
+    # Add specific arguments for file backup tools
+    tool_parser.add_argument(
+        "--source-dir",
+        required=True,
+        metavar="PATH",
+        help="path to directory with files to be backed up",
+    )
+    tool_parser.add_argument(
+        "--source-file",
+        metavar="NAME_or_LIST",
+        help="optional (in quotes), name of specific file(s) in source directory (without ./)",
+    )
+
+    # Add common output directory and extra parameters for all backup tools
+    tool_parser.add_argument(
+        "--output-dir",
+        required=True,
+        metavar="PATH",
+        help="path to backup storage directory",
+    )
+    tool_parser.add_argument(
+        "--extra-params",
+        metavar="PARAMS",
+        help=f"extra parameters (in quotes) for {BACKUP_TOOL} command, if there is only one param starting with '--' add space at end",
+    )
+
+    # Execute the common argument parsers
+    parse_common_args(tool_parser)
+    parse_ssh_args(tool_parser)
+
+    args = parser.parse_args() # Execute the argument parser
+
+    # Loop through all arguments and reassign with environment variable values if applicable
+    for arg, value in vars(args).items():
+        if isinstance(value, str):  # Check if the argument value is a string
+            new_value = get_env_value(value)  # Get the environment variable value
+            setattr(args, arg, new_value)  # Set the new value for the argument
+
+    custom_check_args(parser, args) # Execute the custom argument checks
+
+    setup_logging(parser, args) # Setup logging function
+
+
+    dir_path = os.path.abspath(args.source_dir)
+    dir_name = os.path.basename(dir_path)
+
+    backup_id = f"{BACKUP_TOOL}_{dir_name}"
+
+    logging.info("Starting Rsync backup...")
+
+    # Check if the 'rsync' utility is available
+    check_utility(BACKUP_TOOL)
+
+    # Check available disk space in the output directory
+    check_disk_space(args.output_dir)
+
+    # Create a lock file to prevent concurrent backups
+    lock_file = create_lock_file(backup_id)
+
+    zbx_value = "0" # Default zabbix value
+
+    # Prepare the rsync command with standard options
+    command = [
+        "rsync",
+        "--archive",
+        "--links",
+        "--hard-links",
+        "--xattrs",
+        "--human-readable",
+        args.source_dir,
+        args.output_dir,
+    ]
+
+    # If specific files are provided, adjust the command accordingly
+    if args.source_file:
+        file_list = []
+        source_file_list = args.source_file.split()
+
+        for src_file in source_file_list:
+            # Construct file paths based on whether using SSH
+            if args.ssh_host:
+                file_iter = f":{args.source_dir}/{src_file}"
+            else:
+                file_iter = f"{args.source_dir}/{src_file}"
+
+            file_list.append(file_iter)
+
+        command[6:7] = file_list  # Replace the source_dir in command
+
+    # Add extra parameters for the backup command if provided
+    if args.extra_params:
+        command.extend(args.extra_params.split())
+
+    # If using SSH, prepare the SSH command
+    if args.ssh_host:
+        check_utility("ssh")  # Check for SSH utility
+
+        if not args.source_file:
+            command[6] = f":{args.source_dir}"  # Adjust for SSH source if no specific files
+
+        if not args.ssh_extra_params:
+            args.ssh_extra_params = ""
+
+        command.extend(
+            [
+                "-e",
+                f"ssh -q {args.ssh_extra_params} -o StrictHostKeyChecking=no "
+                f"-o UserKnownHostsFile=/dev/null {args.ssh_host} -p {args.ssh_port} "
+                f"-l {args.ssh_user} -i {args.ssh_key}",
+            ]
+        )
+
+    # Set any custom environment variable for the backup process
+    env = os.environ.copy()
+    env["RSYNC_PASSWORD"] = ""
+
+    logging.info("Starting file backup with rsync...")
+
+    try:
+        # Run the rsync command
+        run_command(command, env)
+
+        logging.info("File backup successfully created at: %s", args.output_dir)
+
+        # If Zabbix config and key are provided, set the value to success
+        if args.zbx_config and args.zbx_key:
+            zbx_value = "1"
+    except subprocess.CalledProcessError as error_msg:
+        logging.error(
+            "Error during file backup with rsync: %s", str(error_msg), exc_info=True
+        )
+        sys.exit(1)
+    finally:
+        remove_lock_file(lock_file)  # Ensure lock file is removed after operation
+        if args.zbx_config and args.zbx_key:
+            zabbix_sender(
+                args.zbx_config, args.zbx_key, zbx_value, args.zbx_extra_params
+            )
+
+
+########################
+### BACKUP DATABASE ####
+########################
+
+def backup_with_db_dump():
+    """Backup selected database"""
+
+    # Create an argument parser for the backup script
+    parser = configargparse.ArgumentParser(
+        description="Backup script for databases: pg_dump, mysqldump"
+    )
+    # Add subparsers for different modes of operation
+    subparsers = parser.add_subparsers(
+        dest="BACKUP_TOOL",
+        required=True,
+    )
+
+    tool_parser = []
+
+    if BACKUP_TOOL == "pg_dump":
+        tool_parser = subparsers.add_parser("pg_dump", help="for PostgreSQL")
+    elif BACKUP_TOOL == "mysqldump":
+        tool_parser = subparsers.add_parser("mysqldump", help="for MySQL")
+
+    # Add database specific arguments for PostgreSQL and MySQL
+    tool_parser.add_argument(
+        "--db-host", required=True, metavar="HOST", help="database address"
+    )
+    tool_parser.add_argument(
+        "--db-port", required=True, type=int, metavar="PORT", help="database port"
+    )
+    tool_parser.add_argument(
+        "--db-name", required=True, metavar="NAME", help="database name"
+    )
+    tool_parser.add_argument(
+        "--db-user", required=True, metavar="USER", help="database user"
+    )
+    # Mutually exclusive group for password handling
+    password_group = tool_parser.add_mutually_exclusive_group(required=True)
+    password_group.add_argument(
+        "--db-password", metavar="PASSWORD", help="database password"
+    )
+    password_group.add_argument(
+        "--db-password-input", action="store_true", help="enter password interactively"
+    )
+
+    # Add common output directory and extra parameters for all backup tools
+    tool_parser.add_argument(
+        "--output-dir",
+        required=True,
+        metavar="PATH",
+        help="path to backup storage directory",
+    )
+    tool_parser.add_argument(
+        "--extra-params",
+        metavar="PARAMS",
+        help=f"extra parameters (in quotes) for {BACKUP_TOOL} command (if there is only one param starting with '--' add space at end)",
+    )
+
+    # Execute the common argument parsers
+    parse_common_args(tool_parser)
+    parse_hash_args(tool_parser)
+    parse_filename_args(tool_parser)
+    parse_retention_args(tool_parser)
+    parse_compression_args(tool_parser)
+    parse_encryption_args(tool_parser)
+    parse_ssh_args(tool_parser)
+
+    args = parser.parse_args() # Execute the argument parser
+
+    # Loop through all arguments and reassign with environment variable values if applicable
+    for arg, value in vars(args).items():
+        if isinstance(value, str):  # Check if the argument value is a string
+            new_value = get_env_value(value)  # Get the environment variable value
+            setattr(args, arg, new_value)  # Set the new value for the argument
+
+    custom_check_args(parser, args) # Execute the custom argument checks
+
+    setup_logging(parser, args) # Setup logging function
+
+    # Define the backup id var
+    if not args.filename:
+        if args.label_keep:
+            backup_id = f"{BACKUP_TOOL}_{args.db_name}_keep"
+        elif args.label_weekly:
+            backup_id = f"{BACKUP_TOOL}_{args.db_name}_weekly"
+        elif args.label_monthly:
+            backup_id = f"{BACKUP_TOOL}_{args.db_name}_monthly"
+        else:
+            backup_id = f"{BACKUP_TOOL}_{args.db_name}"
+    else:
+        backup_id = f"{BACKUP_TOOL}_{args.filename}"
+
+    # Handle DB password input
+    if args.db_password_input:
+        args.db_password = getpass.getpass(prompt="Enter database password: ")
+
+    # Handle encryption password input
+    if not args.encrypt_password:
+        args.encrypt_password = None
+
+    if args.encrypt_password_input:
+        args.encrypt_password = getpass.getpass(prompt="Enter encryption password: ")
+
+    logging.info("Starting database backup...")
+
+    # Remove old backups if specified
+    remove_old_backup(
+        args.output_dir, args.remove_old, args.keep, args.keep_weekly, args.keep_monthly
+    )
+
+    # Check if the pg_dump utility is available
+    check_utility(BACKUP_TOOL)
+
+    # Set the backup file name based on provided filename or default naming
+    if not args.filename:
+        if args.label_keep:
+            backup_file = os.path.join(
+                args.output_dir, f"{args.db_name}_backup_keep_{TIMESTAMP}.sql"
+            )
+        elif args.label_weekly:
+            backup_file = os.path.join(
+                args.output_dir, f"{args.db_name}_backup_weekly_{TIMESTAMP}.sql"
+            )
+        elif args.label_monthly:
+            backup_file = os.path.join(
+                args.output_dir, f"{args.db_name}_backup_monthly_{TIMESTAMP}.sql"
+            )
+        else:
+            backup_file = os.path.join(args.output_dir, f"{args.db_name}_backup_{TIMESTAMP}.sql")
+    else:
+        backup_file = os.path.join(args.output_dir, f"{args.filename}.sql")
+
+    # Check available disk space in the output directory
+    check_disk_space(args.output_dir)
+
+    # Create a lock file to prevent concurrent backups
+    lock_file = create_lock_file(backup_id)
+
+    zbx_value = "0" # Default zabbix value
+
+    # Open SSH tunnel if SSH host is provided
+    if args.ssh_host:
+        if not args.local_forward_port:
+            args.local_forward_port = args.db_port
+
+        forward_ssh_port(
+            args.ssh_host,
+            args.ssh_port,
+            args.ssh_user,
+            args.ssh_key,
+            args.ssh_extra_params,
+            args.db_host,
+            args.db_port,
+            args.local_forward_port,
+        )
+
+        args.db_host = "127.0.0.1"
+        args.db_port = args.local_forward_port
+
+    command = []
+
+    #==============#
+    #== PG_DUMP ===#
+    #==============#
+    if BACKUP_TOOL == "pg_dump":
+        # Prepare the command to dump a database
+        command = [
+            "pg_dump",
+            f"--host={args.db_host}",
+            f"--port={args.db_port}",
+            f"--dbname={args.db_name}",
+            f"--username={args.db_user}",
+            f"--file={backup_file}",
+        ]
+
+        # (REQUIRED) Set the PostgreSQL password environment variable
+        env = os.environ.copy()
+        env["PGPASSWORD"] = args.db_password
+
+    #===============#
+    #== MYSQLDUMP ==#
+    #===============#
+    elif BACKUP_TOOL == "mysqldump":
+        # Path for the temporary MySQL config file
+        # mysql_config_path = f"/dev/shm/.{backup_id}_mysql.cnf"
+
+        # Write the password to a temporary MySQL config file
+        # with open(mysql_config_path, "w", encoding="utf-8") as mysql_config:
+        #     mysql_config.write(f"[client]\npassword={args.db_password}\n")
+
+        # Set file permissions to read-only for the owner
+        # os.chmod(mysql_config_path, 0o400)
+
+        command = [
+            "mysqldump",
+            f"--host={args.db_host}",
+            f"--port={args.db_port}",
+            f"--user={args.db_user}",
+            # f"--password={db_password}",
+            args.db_name,
+            f"--result-file={backup_file}",
+            # f"--defaults-extra-file={mysql_config_path}",
+        ]
+
+        # (REQUIRED) Set the MySQL password environment variable
+        env = os.environ.copy()
+        env["MYSQL_PWD"] = args.db_password
+
+    # Add any extra parameters provided by the user
+    if args.extra_params:
+        command.extend(args.extra_params.split())
+
+    try:
+        # Handle compression or encryption as needed
+        if args.compress:
+            # Remove the result file argument
+            del command[5]
+
+            backup_file = compress_backup(
+                backup_id,
+                command,
+                env,
+                backup_file,
+                args.compress_format,
+                args.compress_level,
+                args.encrypt_password,
+            )
+        elif args.encrypt_password:
+            # Remove the file argument for encryption
+            del command[5]
+
+            backup_file = encrypt_backup(
+                backup_id, command, env, backup_file, args.encrypt_password
+            )
+        else:
+            # Execute the command to perform the backup
+            with subprocess.Popen(
+                command,
+                env=env,
+                stderr=subprocess.PIPE,
+            ) as db_process:
+                for line in db_process.stderr:
+                    logging.info(
+                        "[%s] | %s", BACKUP_TOOL.upper(), line.rstrip().decode()
+                    )
+                    check_stderr(line.decode(), command)
+
+                # Wait for the processe to complete
+                db_process.communicate()
+
+                check_exit_code(db_process.returncode, f"{BACKUP_TOOL} process")
+
+        logging.info("Database backup successfully created: %s", backup_file)
+
+        backup_file_size = check_backup_size(backup_file, command)  # Check backup file size
+        logging.info("File size: %s", backup_file_size)
+
+        if args.hash_file:
+            backup_file_hash = calculate_sha256(backup_file) # Get file sha-256 hash
+            logging.info("File SHA-256 hash: %s", backup_file_hash)
+            logging.info("Hash saved to %s.sha256", backup_file)
+
+        # If Zabbix config and key are provided, set the value to success
+        if args.zbx_config and args.zbx_key:
+            zbx_value = "1"
+    except subprocess.CalledProcessError as error_msg:
+    # except Exception as error_msg:
+        logging.error(
+            "Error during database backup: %s", str(error_msg), exc_info=True
+        )
+        sys.exit(1)
+    finally:
+        # if os.path.exists(mysql_config_path):
+            # os.remove(mysql_config_path)
+        remove_lock_file(lock_file)  # Ensure lock file is removed after operation
+        if args.zbx_config and args.zbx_key:
+            zabbix_sender(
+                args.zbx_config, args.zbx_key, zbx_value, args.zbx_extra_params
+            )
+
+
+###################
+### BACKUP LVM ####
+###################
+
+def backup_with_lvm():
+    """Backup LVM partition with snapshot"""
+
+    # Create an argument parser for the backup script
+    parser = configargparse.ArgumentParser(
+        description="Backup script for LVM snapshot"
+    )
+    # Add subparsers for different modes of operation
+    subparsers = parser.add_subparsers(dest="BACKUP_TOOL", required=True)
+    tool_parser = subparsers.add_parser("lvm", help="for LVM snapshot")
+
+    tool_parser.add_argument(
+        "--vg-name",
+        required=True,
+        metavar="NAME",
+        help="volume group name",
+    )
+    tool_parser.add_argument(
+        "--lv-name",
+        metavar="NAME",
+        help="logical volume to backup",
+    )
+    tool_parser.add_argument(
+        "--snap-size",
+        required=True,
+        metavar="SIZE",
+        help="snapshot size (adjust based on expected changes)",
+    )
+    tool_parser.add_argument(
+        "--output-dir",
+        required=True,
+        metavar="PATH",
+        help="path to backup storage directory",
+    )
+    tool_parser.add_argument(
+        "--extra-params",
+        metavar="PARAMS",
+        help=f"extra parameters (in quotes) for {BACKUP_TOOL} command (if there is only one param starting with '--' add space at end)",
+    )
+
+    # Execute the common argument parsers
+    parse_common_args(tool_parser)
+    parse_hash_args(tool_parser)
+    parse_filename_args(tool_parser)
+    parse_retention_args(tool_parser)
+    parse_compression_args(tool_parser)
+    parse_encryption_args(tool_parser)
+    parse_ssh_args(tool_parser)
+
+    args = parser.parse_args() # Execute the argument parser
+
+    # Loop through all arguments and reassign with environment variable values if applicable
+    for arg, value in vars(args).items():
+        if isinstance(value, str):  # Check if the argument value is a string
+            new_value = get_env_value(value)  # Get the environment variable value
+            setattr(args, arg, new_value)  # Set the new value for the argument
+
+    custom_check_args(parser, args) # Execute the custom argument checks
+
+    setup_logging(parser, args) # Setup logging function
+
+    # Define the backup id var
+    if not args.filename:
+        if args.label_keep:
+            backup_id = f"{BACKUP_TOOL}_{args.lv_name}_keep"
+        elif args.label_weekly:
+            backup_id = f"{BACKUP_TOOL}_{args.lv_name}_weekly"
+        elif args.label_monthly:
+            backup_id = f"{BACKUP_TOOL}_{args.lv_name}_monthly"
+        else:
+            backup_id = f"{BACKUP_TOOL}_{args.lv_name}"
+    else:
+        backup_id = f"{BACKUP_TOOL}_{args.filename}"
+
+    # Handle encryption password input
+    if not args.encrypt_password:
+        args.encrypt_password = None
+
+    if args.encrypt_password_input:
+        args.encrypt_password = getpass.getpass(prompt="Enter encryption password: ")
+
+    logging.info("Starting LVM backup...")
+
+    # Check if the 'lvcreate' and 'lvremove' utilities is available
+    check_utility("lvcreate")
+    check_utility("lvremove")
+
+    # Remove old backups if specified
+    remove_old_backup(
+        args.output_dir, args.remove_old, args.keep, args.keep_weekly, args.keep_monthly
+    )
+
+    # Set the backup file name based on provided filename or default naming
+    if not args.filename:
+        if args.label_keep:
+            backup_file = os.path.join(
+                args.output_dir, f"{args.lv_name}_backup_keep_{TIMESTAMP}.img"
+            )
+        elif args.label_weekly:
+            backup_file = os.path.join(
+                args.output_dir, f"{args.lv_name}_backup_weekly_{TIMESTAMP}.img"
+            )
+        elif args.label_monthly:
+            backup_file = os.path.join(
+                args.output_dir, f"{args.lv_name}_backup_monthly_{TIMESTAMP}.img"
+            )
+        else:
+            backup_file = os.path.join(args.output_dir, f"{args.lv_name}_backup_{TIMESTAMP}.img")
+    else:
+        backup_file = os.path.join(args.output_dir, f"{args.filename}.img")
+
+    # Check available disk space in the output directory
+    check_disk_space(args.output_dir)
+
+    # Create a lock file to prevent concurrent backups
+    lock_file = create_lock_file(backup_id)
+
+    zbx_value = "0" # Default zabbix value
+
+    # Prepare the command to create a LVM snapshot
+    lvcreate = [
+       "lvcreate",
+       "--snapshot",
+       "--name", f"{args.lv_name}-snap", 
+       "--size", args.snap_size,
+       f"/dev/{args.vg_name}/{args.lv_name}"
+    ]
+
+    # Prepare the command to remove a LVM snapshot
+    lvremove = [
+        "lvremove",
+        "--force",
+        f"/dev/{args.vg_name}/{args.lv_name}-snap"
+    ]
+
+    # Prepare the command to create a dd image
+    dd_command = [
+        "dd",
+        f"if=/dev/{args.vg_name}/{args.lv_name}-snap",
+        f"of={backup_file}",
+        "conv=sync,noerror",
+        "bs=64K"
+    ]
+
+    # Adjust command if compression, SSH, or encryption is required
+    if args.compress or args.ssh_host or args.encrypt_password:
+        del dd_command[2]  # Remove 'of' parameter
+
+    # Add any extra parameters provided by the user
+    if args.extra_params:
+        dd_command.extend(args.extra_params.split())
+
+    # If using SSH, prepare the SSH command
+    if args.ssh_host:
+        check_utility("ssh")
+
+        ssh_prefix = [
+            "ssh",
+            "-q",
+            *(args.ssh_extra_params.split() if args.ssh_extra_params else []),
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            args.ssh_host,
+            "-p", args.ssh_port,
+            "-l", args.ssh_user,
+            "-i", args.ssh_key,
+            "sudo"
+        ]
+
+        lvcreate = ssh_prefix + lvcreate  # Prepend SSH command to lvcreate command
+        lvremove = ssh_prefix + lvremove  # Prepend SSH command to lvremove command
+        dd_command = ssh_prefix + dd_command  # Prepend SSH command to dd command
+
+    # Set any custom environment variable for the backup process
+    env = os.environ.copy()
+    env["LVM_SUPPRESS_SYSLOG"] = "0"
+
+    logging.info("Starting LVM backup...")
+
+    try:
+        # Create LVM snapshot
+        run_command(lvcreate)
+
+        # Call the compression or encryption function based on user options
+        if args.compress:
+            backup_file = compress_backup(
+                backup_id,
+                dd_command,
+                env,
+                backup_file,
+                args.compress_format,
+                args.compress_level,
+                args.encrypt_password,
+            )
+        else:
+            if args.encrypt_password:
+                # Encrypt the backup if a password is provided
+                backup_file = args.encrypt_backup(
+                    backup_id, dd_command, env, backup_file, args.encrypt_password
+                )
+            else:
+                if args.ssh_host:
+                    # Handle backup using SSH
+                    run_command(dd_command, backup_file, env, pipe=True)
+                else:
+                    # Run the lvm command directly without SSH
+                    run_command(dd_command)
+
+        logging.info("File backup successfully created: %s", backup_file)
+        
+        backup_file_size = check_backup_size(backup_file, dd_command) # Get file size
+        logging.info("File size: %s", backup_file_size)
+
+        if args.hash_file:
+            backup_file_hash = calculate_sha256(backup_file) # Get file sha-256 hash
+            logging.info("File SHA-256 hash: %s", backup_file_hash)
+            logging.info("Hash saved to %s.sha256", backup_file)
+
+        # If Zabbix config and key are provided, set the value to success
+        if args.zbx_config and args.zbx_key:
+            zbx_value = "1"
+    except Exception as error_msg:
+        logging.error(
+            "Error during file backup with lvm: %s", str(error_msg), exc_info=True
+        )
+        sys.exit(1)
+    finally:
+        run_command(lvremove) # Remove LVM snapshot
+
+        remove_lock_file(lock_file)  # Ensure lock file is removed after operation
+
+        # Run zabbix_sender if set
+        if args.zbx_config and args.zbx_key:
+            zabbix_sender(
+                args.zbx_config, args.zbx_key, zbx_value, args.zbx_extra_params
+            )
+
+
+#########################
+### CONFIG GENERATION ###
+#########################
+
+def config_gen():
+    """Generate config for selected tool"""
 
     # Config generation for the selected backup tool
     tar_config = """\
@@ -1612,7 +2054,8 @@ def main():
 # logfile: /path/to/file.log
 # logfile-append: true
 # silent: true
-source-dir: /path/to/source/dir
+# hash-file: true
+source-dir: /path/to/backup/dir
 # source-file: "file1 file2 file3 dir1 dir2"
 output-dir: /path/to/output/dir
 # extra-params: "--verbose"
@@ -1637,7 +2080,7 @@ output-dir: /path/to/output/dir
 # zbx-config: /path/to/zabbix_agent.conf
 # zbx-key: backup.status
 # zbx-extra-params: "-vv"
-    """
+"""
 
     rsync_config = """\
 #######################
@@ -1649,8 +2092,8 @@ output-dir: /path/to/output/dir
 # silent: true
 source-dir: /path/to/source/dir
 # source-file: "file1 file2 file3 dir1 dir2"
-output-dir: /path/to/output/dir
-# extra-params: "--verbose"
+output-dir: /path/to/backup/dir
+# extra-params: "--verbose --progress"
 # ssh-host: example.com
 # ssh-port: 22
 # ssh-user: user
@@ -1659,7 +2102,45 @@ output-dir: /path/to/output/dir
 # zbx-config: /path/to/zabbix_agent.conf
 # zbx-key: backup.status
 # zbx-extra-params: "-vv"
-    """
+"""
+
+    # Config generation for the selected backup tool
+    lvm_config = """\
+#####################
+### LVM arguments ###
+#####################
+
+# logfile: /path/to/file.log
+# logfile-append: true
+# silent: true
+# hash-file: true
+vg-name: vg-test
+lv-name: lv-test
+snap-size: 10G
+output-dir: /path/to/backup/dir
+# extra-params: "status=progress"
+# filename: custom_backup_file_name
+# label-keep: true
+# label-weekly: true
+# label-monthly: true
+# remove-old: 14
+# keep: true
+# keep-weekly: 4
+# keep-monthly: 2
+# compress: true
+# compress-format: zstd
+# compress-level: 19
+# encrypt-password: "Pa$$W0rd"
+# encrypt-password-input: true
+# ssh-host: example.com
+# ssh-port: 22
+# ssh-user: user
+# ssh-key: /path/to/ssh/private/key
+# ssh-extra-params: "-C -v"
+# zbx-config: /path/to/zabbix_agent.conf
+# zbx-key: backup.status
+# zbx-extra-params: "-vv"
+"""
 
     pg_dump_config = """\
 #########################
@@ -1669,13 +2150,14 @@ output-dir: /path/to/output/dir
 # logfile: /path/to/file.log
 # logfile-append: true
 # silent: true
+# hash-file: true
 db-host: 127.0.0.1
 db-port: 5432
 db-name: postgres
 db-user: postgres
 db-password: "$B4CKUP_DB_PASSWORD"
 # db-password-input: true
-output-dir: /path/to/output/dir
+output-dir: /path/to/backup/dir
 # extra-params: "--schema-only --verbose"
 # filename: custom_backup_file_name
 # label-keep: true
@@ -1699,7 +2181,7 @@ output-dir: /path/to/output/dir
 # zbx-config: /path/to/zabbix_agent.conf
 # zbx-key: backup.status
 # zbx-extra-params: "-vv"
-    """
+"""
 
     mysqldump_config = """\
 ###########################
@@ -1709,6 +2191,7 @@ output-dir: /path/to/output/dir
 # logfile: /path/to/file.log
 # logfile-append: true
 # silent: true
+# hash-file: true
 db-host: 127.0.0.1
 db-port: 3306
 db-name: mysql
@@ -1739,36 +2222,72 @@ output-dir: /path/to/output/dir
 # zbx-config: /path/to/zabbix_agent.conf
 # zbx-key: backup.status
 # zbx-extra-params: "-vv"
-    """
+"""
 
-    # if '--config-gen' in sys.argv:
-    if args.mode == "config-gen": 
-        if args.config_gen == "tar":
-            print(tar_config)
-        elif args.config_gen == "rsync":
-            print(rsync_config)
-        elif args.config_gen == "pg_dump":
-            print(pg_dump_config)
-        elif args.config_gen == "mysqldump":
-            print(mysqldump_config)
-        exit(0)
+    # Create an argument parser for the backup script
+    parser = configargparse.ArgumentParser(
+        description="Backup script for files (tar, rsync) and databases (pg_dump, mysqldump)"
+    )
+    # Add subparsers for different modes of operation
+    subparsers = parser.add_subparsers(
+        dest="BACKUP_TOOL",
+        required=True,
+    )
+    tool_parser = subparsers.add_parser("config-gen", help="for file archiving")
 
-    # Run script
-    try:
-        if args.mode == "file":
-            main_file()
-        elif args.mode == "db":
-            main_db()
-    finally:
-        if args.zbx_config and args.zbx_key:
-            zabbix_sender(
-                args.zbx_config, args.zbx_key, zbx_value, args.zbx_extra_params
-            )
+    tool_parser.add_argument("--tar", action="store_true", help="generate config for tar")
+    tool_parser.add_argument("--rsync", action="store_true", help="generate config for rsync")
+    tool_parser.add_argument("--lvm", action="store_true", help="generate config for lvm")
+    tool_parser.add_argument("--pg_dump", action="store_true", help="generate config for pg_dump")
+    tool_parser.add_argument("--mysqldump", action="store_true", help="generate config for mysqldump")
+
+    args = parser.parse_args() # Execute the argument parser
+
+    if args.tar:
+        print(tar_config)
+    elif args.rsync:
+        print(rsync_config)
+    elif args.lvm:
+        print(lvm_config)
+    elif args.pg_dump:
+        print(pg_dump_config)
+    elif args.mysqldump:
+        print(mysqldump_config)
 
 
-###################
-### RUN IF MAIN ###
-###################
+############
+### MAIN ###
+############
+
+HELP_MESSAGE = f"""\
+Python script for backup files (tar, rsync), disks (lvm) and databases (pg_dump, mysqldump).
+For more help use: {SCRIPT_NAME} <backup_tool> --help
+Example: {SCRIPT_NAME} tar --help"""
+
+if len(sys.argv) < 2:
+    print(HELP_MESSAGE)
+    sys.exit(1)
+
+BACKUP_TOOL = sys.argv[1]
+
+def main():
+    """Start backup"""
+
+    if BACKUP_TOOL in ["-h", "--help"]:
+        print(HELP_MESSAGE)
+    elif BACKUP_TOOL == "config-gen":
+        config_gen()
+    elif BACKUP_TOOL == "tar":
+        backup_with_tar()
+    elif BACKUP_TOOL == "rsync":
+        backup_with_rsync()
+    elif BACKUP_TOOL == "lvm":
+        backup_with_lvm()
+    elif BACKUP_TOOL in ["pg_dump", "mysqldump"]:
+        backup_with_db_dump()
+    else:
+        print(HELP_MESSAGE)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

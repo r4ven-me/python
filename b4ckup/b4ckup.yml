@@ -8,6 +8,7 @@
 # logfile: /path/to/file.log
 # logfile-append: true
 # silent: true
+# hash-file: true
 # source-dir: /path/to/source/dir
 # source-file: "file1 file2 file3 dir1 dir2"
 # output-dir: /path/to/output/dir
@@ -53,6 +54,41 @@
 # zbx-key: backup.status
 # zbx-extra-params: "-vv"
 
+#####################
+### LVM arguments ###
+#####################
+
+# logfile: /path/to/file.log
+# logfile-append: true
+# silent: true
+# hash-file: true
+# vg-name: vg-test
+# lv-name: lv-test
+# snap-size: 10G
+# output-dir: /path/to/backup/dir
+# extra-params: "status=progress"
+# filename: custom_backup_file_name
+# label-keep: true
+# label-weekly: true
+# label-monthly: true
+# remove-old: 14
+# keep: true
+# keep-weekly: 4
+# keep-monthly: 2
+# compress: true
+# compress-format: zstd
+# compress-level: 19
+# encrypt-password: "Pa$$W0rd"
+# encrypt-password-input: true
+# ssh-host: example.com
+# ssh-port: 22
+# ssh-user: user
+# ssh-key: /path/to/ssh/private/key
+# ssh-extra-params: "-C -v"
+# zbx-config: /path/to/zabbix_agent.conf
+# zbx-key: backup.status
+# zbx-extra-params: "-vv"
+
 ##########################
 ### Database arguments ###
 ##########################
@@ -60,6 +96,7 @@
 # logfile: true
 # logfile-append: true
 # silent: true
+# hash-file: true
 # db-host: 127.0.0.1
 # db-port: 5432
 # db-name: postgres
