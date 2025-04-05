@@ -3,7 +3,7 @@
 """Backup script for files (tar, rsync) and databases (pg_dump, mysqldump)"""
 # -*- coding: utf-8 -*-
 __version__ = "1.0.0"
-__status__ = "test"
+__status__ = "beta"
 __author__ = "Ivan Cherniy"
 __email__ = "kar-kar@r4ven.me"
 __copyright__ = "Copyright 2025, r4ven.me"
@@ -120,6 +120,8 @@ def check_stderr(line, command):
         "pg_dump: unrecognized option",
         "pg_dump: error: aborting because of server version mismatch",
         "pg_dump: error: too many command-line arguments",
+        "pg_dumpall: error: missing",
+        "pg_dumpall: error: connection to server",
         "mysqldump: Got error: 1044",
         "mysqldump: Got error: 1045",
         "mysqldump: Got error: 2013",
@@ -935,7 +937,7 @@ def parse_ssh_args(tool_parser):
         help="extra parameters (in quotes) for SSH",
     )
 
-    if BACKUP_TOOL in ["pg_dump", "mysqldump"]:
+    if BACKUP_TOOL in ["pg_dump", "pg_dumpall", "mysqldump"]:
         # Add local forward port argument for database tools
         tool_parser.add_argument(
             "--local-forward-port",
@@ -1020,7 +1022,17 @@ def custom_check_args(parser, args):
         if (args.compress_format or args.compress_level) and not args.compress:
             parser.error("Required parameter to use compression: --compress")
 
-    if BACKUP_TOOL in ["pg_dump", "mysqldump"]:
+    if BACKUP_TOOL in ["pg_dump", "pg_dumpall", "mysqldump"]:
+        if BACKUP_TOOL == "pg_dump" and not args.db_name:
+            parser.error("Required parameters to use pg_dump: --db-name")
+
+        if BACKUP_TOOL == "pg_dumpall":
+            if args.db_name:
+                parser.error("Unnecessary parameter: --db-name")
+
+            if not args.filename:
+                parser.error("Required parameter for pg_dumpall: --filename")
+
         if (args.ssh_host or args.ssh_port or args.ssh_user or args.ssh_key or args.local_forward_port) and not (
             args.ssh_host and args.ssh_port and args.ssh_user and args.ssh_key and args.local_forward_port
         ):
@@ -1290,51 +1302,10 @@ def backup_with_tar():
             else:
                 if args.ssh_host:
                     # Handle backup using SSH
-                    with open(backup_file, "wb") as f_out:
-                        with subprocess.Popen(
-                            command, env=env, stdout=f_out, stderr=subprocess.PIPE
-                        ) as tar_process:
-                            for line in tar_process.stderr:
-                                logging.info(
-                                    "[%s] | %s",
-                                    BACKUP_TOOL.upper(),
-                                    line.rstrip().decode(),
-                                )
-                                check_stderr(line.decode(), command)
-
-                            # Wait for the process to complete
-                            tar_process.communicate()
-
-                            check_exit_code(
-                                tar_process.returncode, f"{BACKUP_TOOL} process"
-                            )
+                    run_command(command, backup_file, env, pipe=True)
                 else:
                     # Run the tar command directly without SSH
-                    with subprocess.Popen(
-                        command,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        universal_newlines=True,
-                        # check=True
-                    ) as tar_process:
-                        for line in tar_process.stdout:
-                            logging.info(
-                                "[%s] | %s}", BACKUP_TOOL.upper(), line.rstrip()
-                            )
-                            check_stderr(line, command)
-
-                        for line in tar_process.stderr:
-                            logging.info(
-                                "[%s] | %s", BACKUP_TOOL.upper(), line.rstrip()
-                            )
-                            check_stderr(line, command)
-
-                        # Wait for the process to complete
-                        tar_process.communicate()
-
-                        check_exit_code(
-                            tar_process.returncode, f"{BACKUP_TOOL} process"
-                        )
+                    run_command(command, env)
 
         logging.info("File backup successfully created: %s", backup_file)
         
@@ -1535,6 +1506,8 @@ def backup_with_db_dump():
 
     if BACKUP_TOOL == "pg_dump":
         tool_parser = subparsers.add_parser("pg_dump", help="for PostgreSQL")
+    elif BACKUP_TOOL == "pg_dumpall":
+        tool_parser = subparsers.add_parser("pg_dumpall", help="for PostgreSQL cluster")
     elif BACKUP_TOOL == "mysqldump":
         tool_parser = subparsers.add_parser("mysqldump", help="for MySQL")
 
@@ -1546,7 +1519,7 @@ def backup_with_db_dump():
         "--db-port", required=True, type=int, metavar="PORT", help="database port"
     )
     tool_parser.add_argument(
-        "--db-name", required=True, metavar="NAME", help="database name"
+        "--db-name", metavar="NAME", help="database name"
     )
     tool_parser.add_argument(
         "--db-user", required=True, metavar="USER", help="database user"
@@ -1679,13 +1652,14 @@ def backup_with_db_dump():
     #==============#
     #== PG_DUMP ===#
     #==============#
-    if BACKUP_TOOL == "pg_dump":
+    if BACKUP_TOOL in ["pg_dump", "pg_dumpall"]:
         # Prepare the command to dump a database
         command = [
-            "pg_dump",
+            BACKUP_TOOL,
             f"--host={args.db_host}",
             f"--port={args.db_port}",
-            f"--dbname={args.db_name}",
+            *([f"--dbname={args.db_name}"] if args.db_name else []),
+            # f"--dbname={args.db_name}",
             f"--username={args.db_user}",
             f"--file={backup_file}",
         ]
@@ -1693,6 +1667,14 @@ def backup_with_db_dump():
         # (REQUIRED) Set the PostgreSQL password environment variable
         env = os.environ.copy()
         env["PGPASSWORD"] = args.db_password
+
+        # Handle compression or encryption as needed
+        if args.compress or args.encrypt_password:
+            # Remove the result file argument
+            if BACKUP_TOOL == "pg_dump":
+                del command[5]
+            else:
+                del command[4]
 
     #===============#
     #== MYSQLDUMP ==#
@@ -1719,6 +1701,10 @@ def backup_with_db_dump():
             # f"--defaults-extra-file={mysql_config_path}",
         ]
 
+        # Handle compression or encryption as needed
+        if args.compress or args.encrypt:
+            del command[5]
+
         # (REQUIRED) Set the MySQL password environment variable
         env = os.environ.copy()
         env["MYSQL_PWD"] = args.db_password
@@ -1730,9 +1716,6 @@ def backup_with_db_dump():
     try:
         # Handle compression or encryption as needed
         if args.compress:
-            # Remove the result file argument
-            del command[5]
-
             backup_file = compress_backup(
                 backup_id,
                 command,
@@ -1743,9 +1726,6 @@ def backup_with_db_dump():
                 args.encrypt_password,
             )
         elif args.encrypt_password:
-            # Remove the file argument for encryption
-            del command[5]
-
             backup_file = encrypt_backup(
                 backup_id, command, env, backup_file, args.encrypt_password
             )
@@ -2260,7 +2240,7 @@ output-dir: /path/to/output/dir
 ############
 
 HELP_MESSAGE = f"""\
-Python script for backup files (tar, rsync), disks (lvm) and databases (pg_dump, mysqldump).
+Python script for backup files (tar, rsync), disks (lvm) and databases (pg_dump, pg_dumpall, mysqldump).
 For more help use: {SCRIPT_NAME} <backup_tool> --help
 Example: {SCRIPT_NAME} tar --help"""
 
@@ -2283,7 +2263,7 @@ def main():
         backup_with_rsync()
     elif BACKUP_TOOL == "lvm":
         backup_with_lvm()
-    elif BACKUP_TOOL in ["pg_dump", "mysqldump"]:
+    elif BACKUP_TOOL in ["pg_dump", "pg_dumpall", "mysqldump"]:
         backup_with_db_dump()
     else:
         print(HELP_MESSAGE)
