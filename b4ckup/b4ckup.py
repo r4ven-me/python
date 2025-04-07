@@ -178,7 +178,7 @@ def remove_old_backup(output_dir, remove_old, keep, keep_weekly, keep_monthly):
         ".gz",
         ".bz",
         ".xz",
-        ".zst"
+        ".zst",
         ".tar.gpg",
         ".sql.gpg",
         ".gz.gpg",
