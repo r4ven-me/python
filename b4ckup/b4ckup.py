@@ -2245,7 +2245,7 @@ For more help use: {SCRIPT_NAME} <backup_tool> --help
 Example: {SCRIPT_NAME} tar --help"""
 
 if len(sys.argv) < 2:
-    print(HELP_MESSAGE)
+    print(HELP_MESSAGE, file=sys.stderr)
     sys.exit(1)
 
 BACKUP_TOOL = sys.argv[1]
@@ -2266,7 +2266,7 @@ def main():
     elif BACKUP_TOOL in ["pg_dump", "pg_dumpall", "mysqldump"]:
         backup_with_db_dump()
     else:
-        print(HELP_MESSAGE)
+        print(HELP_MESSAGE, file=sys.stderr)
         sys.exit(1)
 
 if __name__ == "__main__":
