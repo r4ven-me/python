@@ -673,22 +673,15 @@ def forward_ssh_port(
         "-q",
         *(ssh_extra_params.split() if ssh_extra_params else []),
         "-f",
-        "-o",
-        "StrictHostKeyChecking=no",
-        "-o",
-        "UserKnownHostsFile=/dev/null",
-        "-o",
-        "ExitOnForwardFailure=yes",
-        "-L",
-        f"{local_forward_port}:{db_host}:{db_port}",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "ExitOnForwardFailure=yes",
+        "-L", f"{local_forward_port}:{db_host}:{db_port}",
         ssh_host,
-        "-p",
-        ssh_port,
-        "-l",
-        ssh_user,
-        "-i",
-        ssh_key,
-        "sleep 10",
+        "-p", ssh_port,
+        "-l", ssh_user,
+        "-i", ssh_key,
+        "sleep 10"
     ]
 
     try:
@@ -2025,7 +2018,6 @@ def backup_with_lvm():
 def config_gen():
     """Generate config for selected tool"""
 
-    # Config generation for the selected backup tool
     tar_config = """\
 #####################
 ### Tar arguments ###
@@ -2084,7 +2076,6 @@ output-dir: /path/to/backup/dir
 # zbx-extra-params: "-vv"
 """
 
-    # Config generation for the selected backup tool
     lvm_config = """\
 #####################
 ### LVM arguments ###
@@ -2204,6 +2195,52 @@ output-dir: /path/to/output/dir
 # zbx-extra-params: "-vv"
 """
 
+    docker_compose_config = """
+---
+###########################
+### Docker compose file ###
+###########################
+
+services:
+  postgres:
+    image: r4venme/b4ckup
+    container_name: postgres
+    user: b4ckup:b4ckup
+    hostname: postgres
+    command: b4ckup pg_dump --config ./conf/postgres.yml
+    volumes: &default_volumes
+      - ./data/conf/:/b4ckup/data/conf/
+      - ./data/log/:/b4ckup/data/log/
+      - ./data/keys/:/b4ckup/data/keys/
+      - ./data/archives/:/b4ckup/data/archives/
+
+  mysql:
+    image: r4venme/b4ckup
+    container_name: mysql
+    user: b4ckup:b4ckup
+    hostname: mysql
+    command: |
+      b4ckup mysqldump
+        --logfile "/log/mysql.log"
+        --hash-file
+        --db-host 127.0.0.1
+        --db-port 3386
+        --db-name exampledb
+        --db-user exampleuser
+        --db-password "Pa$$W0rd"
+        --output-dir "./archives/"
+        --extra-params "--schema-only --verbose"
+        --compress
+        --compress-format "pbzip2"
+        --encrypt-password "Pa$$W0rd"
+        --ssh-host "example.com"
+        --ssh-port "22"
+        --ssh-user "exampleuser"
+        --ssh-key "./keys/mysql.key"
+        --local-forward-port "5555"
+    volumes: *default_volumes
+"""
+
     # Create an argument parser for the backup script
     parser = configargparse.ArgumentParser(
         description="Backup script for files (tar, rsync) and databases (pg_dump, mysqldump)"
@@ -2220,6 +2257,7 @@ output-dir: /path/to/output/dir
     tool_parser.add_argument("--lvm", action="store_true", help="generate config for lvm")
     tool_parser.add_argument("--pg_dump", action="store_true", help="generate config for pg_dump")
     tool_parser.add_argument("--mysqldump", action="store_true", help="generate config for mysqldump")
+    tool_parser.add_argument("--docker-compose", action="store_true", help="generate config for docker compose")
 
     args = parser.parse_args() # Execute the argument parser
 
@@ -2233,6 +2271,8 @@ output-dir: /path/to/output/dir
         print(pg_dump_config)
     elif args.mysqldump:
         print(mysqldump_config)
+    elif args.docker_compose:
+        print(docker_compose_config)
 
 
 ############
